@@ -1,14 +1,19 @@
 version: '3.8'
 
-# ============================================================
-# PHP 网站模板（支持 Laravel / WordPress / 原生 PHP）
-# ============================================================
+# =============================================================================
+# PHP 网站模板（安全加固版）
+# 适用: Laravel / WordPress / 原生 PHP 应用
+# 安全修订: SEC-08 资源限制、no-new-privileges、expose 替代 ports
+# =============================================================================
 
 services:
   web:
     image: nginx:alpine
     container_name: site_${SITE_NAME}_nginx
     restart: unless-stopped
+    # 安全说明: 使用 expose 而非 ports，通过 NPM 内部网络反代
+    expose:
+      - "80"
     volumes:
       - ./html:/var/www/html:ro
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
@@ -18,9 +23,24 @@ services:
       - site_internal
     depends_on:
       - php
+    # SEC-08: 资源限制
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.5'
+        reservations:
+          memory: 16M
+    security_opt:
+      - no-new-privileges:true
     labels:
       - "manus.site=${DOMAIN}"
       - "manus.type=php"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   php:
     image: php:8.2-fpm-alpine
@@ -33,15 +53,26 @@ services:
       - ./logs/php:/var/log/php
     networks:
       - site_internal
+      # 如果需要数据库，由部署脚本动态添加 mysql_network
     environment:
       - TZ=Asia/Shanghai
       - DB_HOST=${DB_HOST:-manus-mysql}
       - DB_PORT=${DB_PORT:-3306}
-      - DB_NAME=${DB_NAME}
-      - DB_USER=${DB_USER}
-      - DB_PASS=${DB_PASS}
+      - DB_NAME=${DB_NAME:-}
+      - DB_USER=${DB_USER:-}
+      - DB_PASS=${DB_PASS:-}
     env_file:
       - .env
+    # SEC-08: 资源限制
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+        reservations:
+          memory: 64M
+    security_opt:
+      - no-new-privileges:true
 
 networks:
   npm_network:

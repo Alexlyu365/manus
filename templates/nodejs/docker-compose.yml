@@ -1,8 +1,10 @@
 version: '3.8'
 
-# ============================================================
-# Node.js 网站模板（支持 Next.js / Express / Nuxt 等）
-# ============================================================
+# =============================================================================
+# Node.js 网站模板（安全加固版）
+# 适用: Next.js / Express / Nuxt 等 Node.js 应用
+# 安全修订: SEC-08 资源限制、no-new-privileges、mysql_network 隔离
+# =============================================================================
 
 services:
   web:
@@ -12,6 +14,7 @@ services:
     image: site_${SITE_NAME}:latest
     container_name: site_${SITE_NAME}
     restart: unless-stopped
+    # 安全说明: 使用 expose 而非 ports，通过 NPM 内部网络反代
     expose:
       - "${APP_PORT:-3000}"
     volumes:
@@ -20,6 +23,7 @@ services:
     networks:
       - npm_network
       - site_internal
+      # 如果需要数据库，由部署脚本动态添加 mysql_network
     environment:
       - NODE_ENV=production
       - PORT=${APP_PORT:-3000}
@@ -27,11 +31,22 @@ services:
       # 数据库连接（由部署脚本自动填充）
       - DB_HOST=${DB_HOST:-manus-mysql}
       - DB_PORT=${DB_PORT:-3306}
-      - DB_NAME=${DB_NAME}
-      - DB_USER=${DB_USER}
-      - DB_PASS=${DB_PASS}
+      - DB_NAME=${DB_NAME:-}
+      - DB_USER=${DB_USER:-}
+      - DB_PASS=${DB_PASS:-}
     env_file:
       - .env
+    # SEC-08: 资源限制
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+        reservations:
+          memory: 64M
+    # 安全选项
+    security_opt:
+      - no-new-privileges:true
     labels:
       - "manus.site=${DOMAIN}"
       - "manus.type=nodejs"
