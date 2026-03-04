@@ -1,0 +1,18 @@
+# =============================================================================
+# .manus-private.conf — 私有配置文件示例
+# 用途：存放不能公开的敏感配置（Token、密钥等）
+# 使用方法：
+#   1. 将此文件复制到服务器的 /root/.manus-private.conf
+#   2. 填入真实的 Token 值
+#   3. 此文件永远不会出现在 GitHub 仓库中（已加入 .gitignore）
+#
+# 或者在运行初始化脚本时通过环境变量传入：
+#   MANUS_GITHUB_TOKEN="ghp_xxx" sudo bash <(curl -fsSL ...)
+# =============================================================================
+
+# GitHub Personal Access Token（repo 权限）
+# 获取地址：https://github.com/settings/tokens
+MANUS_GITHUB_TOKEN="ghp_your_token_here"
+
+# GitHub 用户名（用于 git credentials 配置）
+MANUS_GITHUB_USER="your_github_username"

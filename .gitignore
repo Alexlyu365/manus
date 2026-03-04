@@ -2,6 +2,10 @@
 .env
 .env.*
 !.env.example
+
+# 私有配置文件（包含 Token 等敏感信息，绝对不能入库）
+.manus-private.conf
+*.private.conf
 *.pass
 *.key
 *.pem

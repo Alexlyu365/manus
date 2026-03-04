@@ -45,14 +45,26 @@ load_lib "docker.sh"
 load_lib "firewall.sh"
 load_lib "backup.sh"
 
-# ── GitHub Token 配置（自动写入服务器本地，无需用户操作）────────────────────────────
+# ── GitHub Token 配置（从私有配置文件注入，不写入公开仓库）────────────────────────
 setup_github_token() {
     local token_file="/opt/manus/.github_token"
-    # Token 内嵌于脚本，初始化时自动写入服务器本地（不保存在仓库代码中）
-    local GITHUB_TOKEN="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"
-    local GITHUB_USER="Alexlyu365"
-
     mkdir -p /opt/manus
+
+    # 优先级：命令行传入 > 私有配置文件 > 交互输入
+    local GITHUB_TOKEN="${MANUS_GITHUB_TOKEN:-}"
+    local GITHUB_USER="${MANUS_GITHUB_USER:-Alexlyu365}"
+
+    # 如果命令行未传入 Token，尝试从私有配置文件读取
+    if [ -z "$GITHUB_TOKEN" ] && [ -f "/root/.manus-private.conf" ]; then
+        # shellcheck disable=SC1091
+        source /root/.manus-private.conf 2>/dev/null
+        GITHUB_TOKEN="${MANUS_GITHUB_TOKEN:-}"
+    fi
+
+    if [ -z "$GITHUB_TOKEN" ]; then
+        log_info "未配置 GitHub Token，跳过。如需部署私有仓库，运行: manus github-token"
+        return 0
+    fi
 
     log_step "配置 GitHub 私有仓库访问 Token..."
 
