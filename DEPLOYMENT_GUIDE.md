@@ -21,6 +21,19 @@
 
 ## 1. 整体流程概览
 
+### 两仓库分离架构
+
+整套系统采用 **两仓库分离** 设计，安全且便于管理：
+
+| 仓库 | 内容 | 可见性 |
+|------|------|----------|
+| **`Alexlyu365/manus`** | 服务器部署脚本（无敏感信息） | **公开** — 初始化时可直接 curl 拉取 |
+| **`Alexlyu365/网站仓库`** | 网站代码 + `manus.config.json` | **私有** — Token 配置后自动访问 |
+
+> **关键点**：`manus` 仓库中不包含任何敏感信息，Token 在服务器初始化时通过私有配置文件注入到服务器本地，安全且不暴露。
+
+---
+
 整套系统分为 **两个阶段**，第一阶段只需做一次，第二阶段每次新建网站时重复执行。
 
 ```
@@ -28,17 +41,18 @@
 ─────────────────────────────────────────────────────
 Google Cloud 创建服务器
     → 配置 VPC 防火墙规则（开放端口）
-    → 配置 SSH 密鑰
-    → 执行一键初始化脚本
+    → 配置 SSH 密钒
+    → 创建 /root/.manus-private.conf（写入 GitHub Token）
+    → 执行一键初始化脚本（Token 自动配置，无需手动操作）
     → 登录管理面板修改默认密码
-    → 设置 NPM 登录凭据（manus npm-login）← 新增！
+    → 设置 NPM 登录凭据（manus npm-login）
     → 限制管理端口访问 IP
 
-第二阶段（每次建站，约 2 分钟）← 大幅简化！
+第二阶段（每次建站，约 2 分钟）← 全自动！
 ─────────────────────────────────────────────────────
-Manus 生成网站代码并上传到 GitHub
+Manus 生成网站代码并上传到 GitHub 私有仓库
     → manus deploy <仓库地址>
-        └→ 自动克隆代码
+        └→ 自动克隆代码（Token 已配置，私有仓库直接访问）
         └→ 自动构建并启动容器
         └→ 自动在 NPM 创建代理规则
         └→ 自动申请 SSL 证书
@@ -120,7 +134,22 @@ Google Cloud 有独立的 VPC 防火墙，与服务器内部的 UFW 是两层独
 | 来源 IP 范围 | `0.0.0.0/0`（所有 IP，后续可收紧） |
 | 协议和端口 | TCP: `80, 443, 81, 9000, 9443` |
 
-> **安全建议**：端口 81、9000、9443 是管理界面端口，建议将来源 IP 限制为你自己的固定 IP，而非 `0.0.0.0/0`。初始化完成后可以修改此规则，或通过 `manus restrict-admin <你的IP>` 在服务器内部进一步限制。
+>> **安全建议**：端口 81　90009443 是管理界面端口，建议将来源 IP 限制为你自己的固定 IP，而非 `0.0.0.0/0`。初始化完成后可以修改此规则，或通过 `manus restrict-admin <你的IP>` 在服务器内部进一步限制。
+
+### 3.3 创建私有配置文件（写入 GitHub Token）
+
+这是实现全自动化的关键步骤。在服务器上创建私有配置文件，初始化脚本会自动读取并配置 Token，无需手动输入。
+
+```bash
+# SSH 登录服务器后，执行以下命令（将 Token 替换为真实值）
+sudo bash -c 'cat > /root/.manus-private.conf << EOF
+MANUS_GITHUB_TOKEN="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"
+MANUS_GITHUB_USER="Alexlyu365"
+EOF
+chmod 600 /root/.manus-private.conf'
+```
+
+> **安全说明**：此文件仅存在于服务器本地（`/root/.manus-private.conf`），不会上传到任何仓库，权限为 600（仅 root 可读）。
 
 ---
 
@@ -134,13 +163,13 @@ ssh -i ~/.ssh/id_ed25519 YOUR_USER@YOUR_SERVER_IP
 
 ### 4.2 运行初始化脚本
 
-> **注意**：Google Cloud Debian 12 的默认用户不是 root，必须使用 `sudo`。
+> **注意**：Google Cloud Debian 12 的默认用户不是 root，必须使用 `sudo`。请确保已完成上方 3.3 的私有配置文件创建。
 
 ```bash
 sudo bash <(curl -fsSL https://raw.githubusercontent.com/Alexlyu365/manus/main/server-init.sh)
 ```
 
-脚本启动后会显示操作清单，并询问是否继续。**在确认 SSH 密钥已配置且可以正常登录后**，输入 `y` 继续。
+脚本启动后会自动读取 `/root/.manus-private.conf` 中的 Token 并完成配置，**全程无需手动输入任何 Token**。并询问是否继续初始化，输入 `y` 开始。
 
 ### 4.3 初始化过程说明
 
