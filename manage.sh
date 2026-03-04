@@ -37,6 +37,8 @@ load_lib "common.sh"
 load_lib "docker.sh"
 load_lib "firewall.sh"
 load_lib "backup.sh"
+load_lib "npm_api.sh"
+load_lib "deploy.sh"
 
 # ── 检测操作系统 ─────────────────────────────────────────────────────────────
 detect_os
@@ -579,9 +581,49 @@ cmd_self_update() {
     log_success "manus 工具更新完成"
 }
 
-# ── 从 Git 仓库部署站点 ──────────────────────────────────────────────────────
+# ── 从# ── 一键部署：从包含 manus.config.json 的 Git 仓库自动完成全流程 ─────────
+cmd_deploy() {
+    check_root
+    local repo_url="${1:-}"
+    local custom_domain="${2:-}"
+
+    clear
+    print_banner
+    echo -e "${WHITE}── 一键部署网站 ──────────────────────────────────────${NC}"
+    echo ""
+
+    # 如果未提供仓库地址，交互式输入
+    if [ -z "$repo_url" ]; then
+        echo -e "${YELLOW}请输入网站 GitHub 仓库地址:${NC}"
+        echo -e "${WHITE}（例如: https://github.com/Alexlyu365/my-website.git）${NC}"
+        echo -n "  > "
+        read -r repo_url
+    fi
+
+    if [ -z "$repo_url" ]; then
+        log_error "仓库地址不能为空"
+        return 1
+    fi
+
+    echo ""
+    log_info "开始一键部署: $repo_url"
+    echo ""
+
+    # 调用 deploy.sh 中的主部署函数
+    deploy_site_from_repo "$repo_url" "$custom_domain"
+}
+
+# ── 设置 NPM 登录凭据（一键部署的前提） ─────────────────────────────
+cmd_npm_login() {
+    check_root
+    npm_setup_credentials
+}
+
+# ── 从 Git 仓库部署站点（旧版兼容，保留交互式流程） ────────────────
 cmd_deploy_from_git() {
     check_root
+    echo ""
+    echo -e "${CYAN}提示: 如果仓库包含 manus.config.json，建议使用 ${GREEN}manus deploy${CYAN} 命令实现全自动化部署${NC}"
     echo ""
     echo -e "${YELLOW}请输入 Git 仓库地址（例如: https://github.com/user/repo.git）:${NC} \c"
     read -r GIT_URL
@@ -611,7 +653,6 @@ cmd_deploy_from_git() {
 
     local site_dir="/opt/sites/${DOMAIN}"
 
-    # 克隆仓库
     log_step "克隆代码仓库..."
     if [ -d "$site_dir" ]; then
         log_warn "目录已存在，将更新代码"
@@ -621,13 +662,11 @@ cmd_deploy_from_git() {
         git clone "$GIT_URL" "$site_dir"
     fi
 
-    # 如果仓库中有 docker-compose.yml，直接使用
     if [ -f "${site_dir}/docker-compose.yml" ]; then
         log_info "检测到仓库中的 docker-compose.yml，直接使用"
         cd "$site_dir"
         docker compose up -d --build
     else
-        # 否则按类型部署
         NEED_DB=false
         if [ "$SITE_TYPE" != "static" ]; then
             if confirm "是否创建独立数据库？"; then
@@ -640,6 +679,7 @@ cmd_deploy_from_git() {
     register_site "$DOMAIN" "$SITE_TYPE" "auto"
     log_success "从 Git 仓库部署完成: $DOMAIN"
 }
+}
 
 # =============================================================================
 # 交互式主菜单
@@ -650,43 +690,45 @@ show_main_menu() {
         print_banner
         echo -e "${WHITE}请选择操作：${NC}"
         echo ""
-        echo -e "  ${GREEN}1${NC}  部署新网站（交互式）"
-        echo -e "  ${GREEN}2${NC}  从 Git 仓库部署网站"
-        echo -e "  ${GREEN}3${NC}  查看所有站点"
-        echo -e "  ${GREEN}4${NC}  系统状态总览"
-        echo ""
-        echo -e "  ${CYAN}5${NC}  启动站点"
-        echo -e "  ${CYAN}6${NC}  停止站点"
-        echo -e "  ${CYAN}7${NC}  重启站点"
-        echo -e "  ${CYAN}8${NC}  更新站点（重新构建）"
-        echo ""
-        echo -e "  ${YELLOW}9${NC}  查看站点日志"
-        echo -e "  ${YELLOW}10${NC} 备份管理"
-        echo -e "  ${YELLOW}11${NC} 删除站点"
-        echo ""
-        echo -e "  ${BLUE}12${NC} 更新 manus 工具"
-        echo -e "  ${RED}0${NC}  退出"
-        echo ""
-        print_line
-        echo -e "${YELLOW}请输入选项:${NC} \c"
-        read -r choice
+    echo -e "  ${GREEN}1${NC}  一键部署网站 ${CYAN}(推荐)${NC}  — 从 GitHub 仓库全自动完成"
+    echo -e "  ${GREEN}2${NC}  手动部署网站       — 交互式逐步配置"
+    echo -e "  ${GREEN}3${NC}  查看所有站点"
+    echo -e "  ${GREEN}4${NC}  系统状态总览"
+    echo ""
+    echo -e "  ${CYAN}5${NC}  启动站点"
+    echo -e "  ${CYAN}6${NC}  停止站点"
+    echo -e "  ${CYAN}7${NC}  重启站点"
+    echo -e "  ${CYAN}8${NC}  更新站点（重新构建）"
+    echo ""
+    echo -e "  ${YELLOW}9${NC}  查看站点日志"
+    echo -e "  ${YELLOW}10${NC} 备份管理"
+    echo -e "  ${YELLOW}11${NC} 删除站点"
+    echo ""
+    echo -e "  ${BLUE}12${NC} 设置 NPM 登录凭据（一键部署前必要）"
+    echo -e "  ${BLUE}13${NC} 更新 manus 工具"
+    echo -e "  ${RED}0${NC}  退出"
+    echo ""
+    print_line
+    echo -e "${YELLOW}请输入选项:${NC} \c"
+    read -r choice
 
-        case "$choice" in
-            1)  cmd_add ;;
-            2)  cmd_deploy_from_git ;;
-            3)  cmd_list ;;
-            4)  cmd_status ;;
-            5)  cmd_start ;;
-            6)  cmd_stop ;;
-            7)  cmd_restart ;;
-            8)  cmd_update ;;
-            9)  cmd_logs ;;
-            10) cmd_backup ;;
-            11) cmd_remove ;;
-            12) cmd_self_update ;;
-            0)  echo "再见！"; exit 0 ;;
-            *)  log_warn "无效选项，请重新输入" ;;
-        esac
+    case "$choice" in
+        1)  cmd_deploy ;;
+        2)  cmd_add ;;
+        3)  cmd_list ;;
+        4)  cmd_status ;;
+        5)  cmd_start ;;
+        6)  cmd_stop ;;
+        7)  cmd_restart ;;
+        8)  cmd_update ;;
+        9)  cmd_logs ;;
+        10) cmd_backup ;;
+        11) cmd_remove ;;
+        12) cmd_npm_login ;;
+        13) cmd_self_update ;;
+        0)  echo "再见！"; exit 0 ;;
+        *)  log_warn "无效选项，请重新输入" ;;
+    esac
 
         echo ""
         echo -e "${YELLOW}按 Enter 键继续...${NC}"
@@ -702,19 +744,25 @@ show_help() {
     echo -e "${WHITE}用法: manus [命令] [参数]${NC}"
     echo ""
     echo -e "${WHITE}命令列表：${NC}"
-    printf "  %-20s %s\n" "add"           "交互式部署新网站"
-    printf "  %-20s %s\n" "git"           "从 Git 仓库部署网站"
-    printf "  %-20s %s\n" "list"          "查看所有已部署站点"
-    printf "  %-20s %s\n" "status"        "系统状态总览"
-    printf "  %-20s %s\n" "start <域名>"  "启动指定站点"
-    printf "  %-20s %s\n" "stop <域名>"   "停止指定站点"
-    printf "  %-20s %s\n" "restart <域名>" "重启指定站点"
-    printf "  %-20s %s\n" "update <域名>" "更新指定站点"
-    printf "  %-20s %s\n" "logs <域名>"   "查看站点实时日志"
-    printf "  %-20s %s\n" "backup [域名]" "备份站点（不指定则备份全部）"
-    printf "  %-20s %s\n" "remove <域名>" "删除站点"
-    printf "  %-20s %s\n" "self-update"   "更新 manus 工具自身"
-    printf "  %-20s %s\n" "help"          "显示此帮助信息"
+    echo -e "${CYAN}── 核心命令 ───────────────────────────────────────────────${NC}"
+    printf "  ${GREEN}%-22s${NC} %s\n" "deploy <仓库地址>" "★ 一键部署：自动完成容器+NPM代理+SSL"
+    printf "  ${GREEN}%-22s${NC} %s\n" "npm-login"          "设置 NPM 凭据（一键部署前需要运行一次）"
+    printf "  %-22s %s\n" "add"               "手动部署新网站（交互式）"
+    printf "  %-22s %s\n" "git"               "从 Git 仓库部署（旧版交互式）"
+    echo ""
+    echo -e "${CYAN}── 站点管理 ───────────────────────────────────────────────${NC}"
+    printf "  %-22s %s\n" "list"              "查看所有已部署站点"
+    printf "  %-22s %s\n" "status"            "系统状态总览"
+    printf "  %-22s %s\n" "start <域名>"     "启动指定站点"
+    printf "  %-22s %s\n" "stop <域名>"      "停止指定站点"
+    printf "  %-22s %s\n" "restart <域名>"   "重启指定站点"
+    printf "  %-22s %s\n" "update <域名>"    "更新指定站点（重新构建）"
+    printf "  %-22s %s\n" "logs <域名>"      "查看站点实时日志"
+    printf "  %-22s %s\n" "backup [域名]"    "备份站点（不指定则备份全部）"
+    printf "  %-22s %s\n" "remove <域名>"    "删除站点"
+    printf "  %-22s %s\n" "restrict-admin <IP>" "限制管理面板访问 IP"
+    printf "  %-22s %s\n" "self-update"        "更新 manus 工具自身"
+    printf "  %-22s %s\n" "help"               "显示此帮助信息"
     echo ""
     echo -e "${WHITE}直接运行 ${GREEN}manus${WHITE} 进入交互式菜单${NC}"
     echo ""
@@ -722,6 +770,8 @@ show_help() {
 
 # ── 入口 ─────────────────────────────────────────────────────────────────────
 case "${1:-}" in
+    deploy)      cmd_deploy "${2:-}" "${3:-}" ;;
+    npm-login)   cmd_npm_login ;;
     add)         cmd_add ;;
     git)         cmd_deploy_from_git ;;
     list)        cmd_list ;;
@@ -733,6 +783,7 @@ case "${1:-}" in
     logs)        cmd_logs "${2:-}" ;;
     backup)      cmd_backup "${2:-}" ;;
     remove|rm|delete) cmd_remove "${2:-}" ;;
+    restrict-admin)   restrict_admin_ports "${2:-}" ;;
     self-update) cmd_self_update ;;
     help|--help|-h) show_help ;;
     "")          show_main_menu ;;

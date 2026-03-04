@@ -1,0 +1,41 @@
+{
+  "_comment": "Manus Deploy 网站配置文件 — 每个网站仓库根目录放此文件",
+  "_version": "1.0",
+
+  "site": {
+    "domain": "example.com",
+    "email": "your@email.com",
+    "type": "static",
+    "description": "网站描述（可选）"
+  },
+
+  "build": {
+    "type": "static",
+    "source_dir": "dist",
+    "build_command": "",
+    "node_version": "20"
+  },
+
+  "server": {
+    "port": 80,
+    "max_upload_size": "500m",
+    "enable_gzip": true,
+    "enable_cache": true,
+    "cache_days": 30
+  },
+
+  "ssl": {
+    "enabled": true,
+    "force_https": true,
+    "http2": true
+  },
+
+  "database": {
+    "enabled": false,
+    "name": "",
+    "user": ""
+  },
+
+  "env": {
+  }
+}

@@ -25,20 +25,24 @@
 
 ```
 第一阶段（一次性，约 15 分钟）
-─────────────────────────────────────────────────────────
+─────────────────────────────────────────────────────
 Google Cloud 创建服务器
     → 配置 VPC 防火墙规则（开放端口）
-    → 配置 SSH 密钥
+    → 配置 SSH 密鑰
     → 执行一键初始化脚本
     → 登录管理面板修改默认密码
+    → 设置 NPM 登录凭据（manus npm-login）← 新增！
     → 限制管理端口访问 IP
 
-第二阶段（每次建站，约 5 分钟）
-─────────────────────────────────────────────────────────
-执行 manus add（或 manus git）
-    → 在 Nginx Proxy Manager 添加代理规则
-    → 申请 SSL 证书
-    → 网站上线
+第二阶段（每次建站，约 2 分钟）← 大幅简化！
+─────────────────────────────────────────────────────
+Manus 生成网站代码并上传到 GitHub
+    → manus deploy <仓库地址>
+        └→ 自动克隆代码
+        └→ 自动构建并启动容器
+        └→ 自动在 NPM 创建代理规则
+        └→ 自动申请 SSL 证书
+        └→ 网站上线！全程无需手动操作任何界面
 ```
 
 ---
@@ -266,9 +270,45 @@ sudo fail2ban-client status
 
 ---
 
-## 6. 第五部分：部署第一个网站
+## 6. 第五部分：部署网站
 
-### 6.1 方式一：交互式部署（推荐）
+### 6.0 前提：设置 NPM 登录凭据（仅需一次）
+
+在使用一键部署之前，需要先将 NPM 的登录信息告知系统，这样以后每次部署网站时才能自动操作 NPM。**此步骤只需做一次**。
+
+```bash
+manus npm-login
+```
+
+系统会提示输入 NPM 的登录邮筱和密码（就是你在 5.1 步骤中修改的密码），验证通过后会将凭据加密保存到服务器。
+
+### 6.1 方式一：一键部署（强烈推荐）
+
+这是最简单的方式。Manus 生成的每个网站仓库根目录都包含 `manus.config.json` 配置文件，执行一条命令即可完成全部流程。
+
+```bash
+manus deploy https://github.com/Alexlyu365/仓库名.git
+```
+
+命令执行后自动完成以下 7 个步骤，全程无需手动操作任何界面：
+
+| 步骤 | 自动完成的操作 |
+|------|-------------------|
+| 1 | 克隆 GitHub 仓库代码 |
+| 2 | 读取 `manus.config.json` 中的域名、类型、配置 |
+| 3 | 复制网站文件到服务器 |
+| 4 | 生成 Docker Compose 和 Nginx 配置文件 |
+| 5 | 启动 Docker 容器 |
+| 6 | 调用 NPM API 自动创建代理规则 |
+| 7 | 调用 Let's Encrypt API 自动申请 SSL 证书并绑定 |
+
+部署成功后，终端会显示网站地址和管理命令。
+
+> **前提条件**：域名必须已解析到服务器 IP，且 80 端口可外网访问。DNS 解析通常需 5-30 分钟生效。
+
+### 6.2 方式二：手动交互式部署
+
+如果网站仓库不包含 `manus.config.json`，或需要手动控制每个步骤，可使用交互式模式：
 
 ```bash
 manus add
@@ -280,56 +320,58 @@ manus add
 2. **网站类型** — 选择 `1`（静态网站，适合产品展示/图片/视频）
 3. **是否需要数据库** — 产品展示类网站通常选 `n`（不需要）
 
-完成后脚本会输出容器名称，记录下来用于下一步。
+此方式需要在完成后手动登录 NPM 界面添加代理规则和申请 SSL，详见下方。
 
-### 6.2 方式二：从 GitHub 仓库部署
+### 6.3 手动方式的 NPM 配置（仅手动模式需要）
 
-```bash
-manus git
-```
+如果使用了 `manus deploy` 一键部署，此步骤已自动完成，无需手动操作。
 
-输入网站代码的 GitHub 仓库地址，脚本会自动克隆并部署。
-
-### 6.3 在 NPM 中添加代理规则（每次建站必做）
-
-这是唯一需要手动操作的步骤，约 1 分钟。
-
-打开 NPM 管理界面（`http://YOUR_IP:81`），点击 **Proxy Hosts → Add Proxy Host**：
+如果使用了 `manus add`，需要打开 NPM 管理界面（`http://YOUR_IP:81`），点击 **Proxy Hosts → Add Proxy Host**：
 
 | 字段 | 填写内容 |
-|------|---------|
+|------|----------|
 | Domain Names | 你的域名，如 `example.com` |
 | Scheme | `http` |
 | Forward Hostname / IP | 容器名，如 `site_example_com` |
 | Forward Port | 静态网站填 `80`，Node.js 填 `3000`，PHP 填 `80` |
 | Cache Assets | 建议开启（图片/视频缓存） |
 | Block Common Exploits | 建议开启 |
-| Websockets Support | Node.js 应用需要开启 |
 
 切换到 **SSL** 标签页：
 
 | 字段 | 填写内容 |
-|------|---------|
+|------|----------|
 | SSL Certificate | 选择 `Request a new SSL Certificate` |
 | Force SSL | 开启（强制 HTTPS） |
 | HTTP/2 Support | 开启 |
-| Email Address | 填写你的邮箱（用于证书到期提醒） |
+| Email Address | 填写你的邮筱（用于证书到期提醒） |
 
 点击 **Save**，NPM 会自动向 Let's Encrypt 申请免费 SSL 证书，约 30 秒完成。
 
-> **前提条件**：申请 SSL 证书之前，域名必须已经解析到服务器 IP，且 80 端口可以从外网访问。DNS 解析生效通常需要 5-30 分钟。
+### 6.4 更新网站内容
 
-### 6.4 上传网站文件
-
-网站文件目录位于服务器的 `/opt/sites/域名/html/`，可以通过 SCP 或 SFTP 上传：
+Manus 修改网站并重新提交到 GitHub 后，在服务器执行：
 
 ```bash
-# 从本地上传文件到服务器（在本地电脑执行）
-scp -r ./dist/* YOUR_USER@YOUR_IP:/opt/sites/example.com/html/
-
-# 或使用 rsync（支持增量同步，适合大量文件）
-rsync -avz --delete ./dist/ YOUR_USER@YOUR_IP:/opt/sites/example.com/html/
+manus update your-domain.com
 ```
+
+如果配置了 GitHub Actions（见 6.5 节），则代码推送到 GitHub 后会自动触发服务器更新，无需手动操作。
+
+### 6.5 配置 GitHub Actions 自动更新（可选）
+
+配置完成后，每次 Manus 更新网站代码并推送到 GitHub，服务器会自动拉取最新代码并重启容器。
+
+在网站 GitHub 仓库的 **Settings → Secrets and variables → Actions** 中添加以下 Secret：
+
+| Secret 名称 | 值 |
+|-------------|-----|
+| `SERVER_HOST` | 服务器公网 IP 地址 |
+| `SERVER_USER` | SSH 用户名（通常为 `root`） |
+| `SERVER_SSH_KEY` | SSH 私鑰内容（`cat ~/.ssh/id_ed25519`） |
+| `SITE_DOMAIN` | 网站域名 |
+
+配置完成后，每次向 `main` 分支推送代码就会自动部署。
 
 ---
 
@@ -338,18 +380,23 @@ rsync -avz --delete ./dist/ YOUR_USER@YOUR_IP:/opt/sites/example.com/html/
 所有管理操作通过 `manus` 命令完成，在服务器上执行：
 
 ```bash
-manus help          # 查看所有可用命令
-manus list          # 查看所有已部署站点
-manus add           # 部署新站点（交互式）
-manus git           # 从 GitHub 仓库部署站点
-manus stop 域名     # 停止站点
-manus start 域名    # 启动站点
-manus restart 域名  # 重启站点
-manus logs 域名     # 查看站点日志
-manus backup        # 手动备份所有站点
-manus restore       # 从备份恢复站点
-manus delete 域名   # 删除站点（会提示确认）
-manus restrict-admin IP  # 限制管理端口访问 IP
+# ★ 核心命令
+manus deploy <仓库地址>   # 一键部署：自动完成容器+NPM+SSL
+manus npm-login             # 设置 NPM 登录凭据（仅需一次）
+
+# 站点管理
+manus list                  # 查看所有已部署站点
+manus add                   # 手动部署新站点（交互式）
+manus stop 域名             # 停止站点
+manus start 域名            # 启动站点
+manus restart 域名          # 重启站点
+manus update 域名           # 更新站点（重新构建）
+manus logs 域名             # 查看站点日志
+manus backup                # 手动备份所有站点
+manus remove 域名           # 删除站点（会提示确认）
+manus restrict-admin IP     # 限制管理端口访问 IP
+manus status                # 系统状态总览
+manus help                  # 查看所有可用命令
 ```
 
 ### 7.1 更新网站内容

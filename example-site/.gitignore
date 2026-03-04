@@ -1,0 +1,18 @@
+# 环境变量（含数据库密码等敏感信息，绝不提交）
+.env
+.env.local
+.env.production
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 编辑器
+.vscode/
+.idea/
+
+# 依赖
+node_modules/
+
+# 构建缓存
+.cache/
