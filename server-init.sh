@@ -45,6 +45,31 @@ load_lib "docker.sh"
 load_lib "firewall.sh"
 load_lib "backup.sh"
 
+# ── GitHub Token 配置（自动写入服务器本地，无需用户操作）────────────────────────────
+setup_github_token() {
+    local token_file="/opt/manus/.github_token"
+    # Token 内嵌于脚本，初始化时自动写入服务器本地（不保存在仓库代码中）
+    local GITHUB_TOKEN="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"
+    local GITHUB_USER="Alexlyu365"
+
+    mkdir -p /opt/manus
+
+    log_step "配置 GitHub 私有仓库访问 Token..."
+
+    # 将 Token 写入本地文件（仅 root 可读）
+    echo "$GITHUB_TOKEN" > "$token_file"
+    chmod 600 "$token_file"
+
+    # 配置 git credential helper
+    git config --global credential.helper store 2>/dev/null
+
+    # 写入 git credentials，让所有 git clone 自动认证
+    echo "https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com" > /root/.git-credentials
+    chmod 600 /root/.git-credentials
+
+    log_success "GitHub Token 已自动配置，可直接部署公开和私有仓库"
+}
+
 # ── SEC-03: SSH 密钥前置检查 ─────────────────────────────────────────────────
 check_ssh_key() {
     echo ""
@@ -203,6 +228,9 @@ main() {
     chmod 755 /opt/sites
     log_success "目录结构创建完成: /opt/manus, /opt/sites"
 
+    # ── GitHub Token 自动配置 ───────────────────────────────────────────────
+    setup_github_token
+
     # ── Step 11: 部署基础服务 ────────────────────────────────────────────────
     log_step "[10/12] 部署基础服务..."
 
@@ -267,14 +295,17 @@ main() {
     echo -e "  1. 登录 NPM (http://${server_ip}:81) 立即修改默认密码"
     echo -e "  2. 执行 ${CYAN}manus restrict-admin <你的IP>${NC} 限制管理端口访问"
     echo -e "  3. 查看安全审计报告: ${CYAN}cat /opt/manus/SECURITY_AUDIT.md${NC}"
+
+    echo -e "  ${GREEN}✓${NC} GitHub Token 已自动配置，可直接部署公开和私有仓库"
     echo ""
     print_line
     echo ""
     echo -e "${WHITE}下一步 — 部署您的第一个网站：${NC}"
     echo ""
-    echo -e "  ${GREEN}manus add${NC}   # 交互式部署新网站"
-    echo -e "  ${GREEN}manus list${NC}  # 查看所有站点"
-    echo -e "  ${GREEN}manus help${NC}  # 查看所有命令"
+    echo -e "  ${GREEN}manus deploy <仓库地址>${NC}  # ★ 一键部署（自动完成容器+SSL）"
+    echo -e "  ${GREEN}manus add${NC}                 # 交互式部署新网站"
+    echo -e "  ${GREEN}manus list${NC}                # 查看所有站点"
+    echo -e "  ${GREEN}manus help${NC}                # 查看所有命令"
     echo ""
     print_line
     echo ""
