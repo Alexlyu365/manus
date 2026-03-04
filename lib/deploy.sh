@@ -374,7 +374,7 @@ deploy_site_from_repo() {
     log_step "[3/7] 准备站点目录..."
 
     local safe_name
-    safe_name=$(echo "$SITE_DOMAIN" | tr '.' '-' | tr '[:upper:]' '[:lower:]')
+    safe_name=$(echo "$SITE_DOMAIN" | tr '.' '-' | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-')
     local container_name="site_${safe_name}"
     local site_dir="/opt/sites/${SITE_DOMAIN}"
 
@@ -464,10 +464,18 @@ deploy_site_from_repo() {
         return 1
     }
 
-    # 等待容器就绪
-    sleep 3
+    # 等待容器就绪（最多等 30 秒）
+    local wait_count=0
+    while [ $wait_count -lt 10 ]; do
+        if docker ps --filter "name=${container_name}" --filter "status=running" | grep -q "$container_name"; then
+            break
+        fi
+        sleep 3
+        wait_count=$((wait_count + 1))
+    done
     if ! docker ps --filter "name=${container_name}" --filter "status=running" | grep -q "$container_name"; then
         log_error "容器启动后未正常运行，请检查日志: docker logs ${container_name}"
+        log_error "常见原因: 端口冲突、配置错误、镜像拉取失败"
         rm -rf "$tmp_dir"
         return 1
     fi
@@ -521,6 +529,9 @@ deploy_site_from_repo() {
         if [ "$SSL_ENABLED" = "true" ]; then
             cert_id=$(npm_request_ssl "$SITE_DOMAIN" "$SITE_EMAIL" "$npm_token")
             if [ "$cert_id" != "0" ] && [ -n "$cert_id" ]; then
+                # 等待 NPM 完成证书申请处理（Let's Encrypt 验证需要几秒）
+                log_info "等待 SSL 证书申请处理完成..."
+                sleep 5
                 npm_update_proxy_ssl "$proxy_id" "$cert_id" "$npm_token"
             fi
         fi
@@ -597,9 +608,11 @@ _register_site() {
     touch "$sites_conf"
 
     # 如果已存在则更新，否则追加
+    local date_str
+    date_str=$(date +%Y-%m-%d)
     if grep -q "^${domain}|" "$sites_conf"; then
-        sed -i "s|^${domain}|.*|${domain}|${container}|${type}|${repo}|$(date +%Y-%m-%d)|" "$sites_conf"
-    else
-        echo "${domain}|${container}|${type}|${repo}|$(date +%Y-%m-%d)" >> "$sites_conf"
+        # 删除旧记录再追加新记录（避免 sed 特殊字符问题）
+        sed -i "/^${domain}|/d" "$sites_conf"
     fi
+    echo "${domain}|${container}|${type}|${repo}|${date_str}" >> "$sites_conf"
 }
