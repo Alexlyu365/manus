@@ -1,0 +1,50 @@
+version: '3.8'
+
+# ============================================================
+# Node.js 网站模板（支持 Next.js / Express / Nuxt 等）
+# ============================================================
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: site_${SITE_NAME}:latest
+    container_name: site_${SITE_NAME}
+    restart: unless-stopped
+    expose:
+      - "${APP_PORT:-3000}"
+    volumes:
+      - ./uploads:/app/uploads     # 用户上传文件（图片/视频）
+      - ./logs:/app/logs
+    networks:
+      - npm_network
+      - site_internal
+    environment:
+      - NODE_ENV=production
+      - PORT=${APP_PORT:-3000}
+      - TZ=Asia/Shanghai
+      # 数据库连接（由部署脚本自动填充）
+      - DB_HOST=${DB_HOST:-manus-mysql}
+      - DB_PORT=${DB_PORT:-3306}
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASS=${DB_PASS}
+    env_file:
+      - .env
+    labels:
+      - "manus.site=${DOMAIN}"
+      - "manus.type=nodejs"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:${APP_PORT:-3000}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  npm_network:
+    external: true
+  site_internal:
+    name: site_${SITE_NAME}_internal
+    driver: bridge

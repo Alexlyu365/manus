@@ -1,0 +1,51 @@
+version: '3.8'
+
+# ============================================================
+# PHP 网站模板（支持 Laravel / WordPress / 原生 PHP）
+# ============================================================
+
+services:
+  web:
+    image: nginx:alpine
+    container_name: site_${SITE_NAME}_nginx
+    restart: unless-stopped
+    volumes:
+      - ./html:/var/www/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./logs/nginx:/var/log/nginx
+    networks:
+      - npm_network
+      - site_internal
+    depends_on:
+      - php
+    labels:
+      - "manus.site=${DOMAIN}"
+      - "manus.type=php"
+
+  php:
+    image: php:8.2-fpm-alpine
+    container_name: site_${SITE_NAME}_php
+    restart: unless-stopped
+    volumes:
+      - ./html:/var/www/html
+      - ./uploads:/var/www/uploads
+      - ./php.ini:/usr/local/etc/php/conf.d/custom.ini:ro
+      - ./logs/php:/var/log/php
+    networks:
+      - site_internal
+    environment:
+      - TZ=Asia/Shanghai
+      - DB_HOST=${DB_HOST:-manus-mysql}
+      - DB_PORT=${DB_PORT:-3306}
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASS=${DB_PASS}
+    env_file:
+      - .env
+
+networks:
+  npm_network:
+    external: true
+  site_internal:
+    name: site_${SITE_NAME}_internal
+    driver: bridge
