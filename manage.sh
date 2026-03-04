@@ -39,6 +39,11 @@ load_lib "firewall.sh"
 load_lib "backup.sh"
 load_lib "npm_api.sh"
 load_lib "deploy.sh"
+load_lib "sysinfo.sh"
+load_lib "docker_mgr.sh"
+load_lib "network.sh"
+load_lib "system_tools.sh"
+load_lib "site_mgr.sh"
 
 # ── 检测操作系统 ─────────────────────────────────────────────────────────────
 detect_os
@@ -688,52 +693,114 @@ show_main_menu() {
     while true; do
         clear
         print_banner
-        echo -e "${WHITE}请选择操作：${NC}"
+        # 显示简要系统状态
+        local mem_used mem_total disk_used disk_pct
+        mem_used=$(free -m | awk 'NR==2{print $3}')
+        mem_total=$(free -m | awk 'NR==2{print $2}')
+        disk_used=$(df -h / | awk 'NR==2{print $3}')
+        disk_pct=$(df -h / | awk 'NR==2{print $5}')
+        local site_count
+        site_count=$(grep -c '|' /opt/manus/sites.conf 2>/dev/null || echo 0)
+        echo -e "  ${CYAN}内存: ${WHITE}${mem_used}M/${mem_total}M${NC}  ${CYAN}磁盘: ${WHITE}${disk_used} (${disk_pct})${NC}  ${CYAN}站点: ${WHITE}${site_count} 个${NC}"
         echo ""
-    echo -e "  ${GREEN}1${NC}  一键部署网站 ${CYAN}(推荐)${NC}  — 从 GitHub 仓库全自动完成"
-    echo -e "  ${GREEN}2${NC}  手动部署网站       — 交互式逐步配置"
-    echo -e "  ${GREEN}3${NC}  查看所有站点"
-    echo -e "  ${GREEN}4${NC}  系统状态总览"
-    echo ""
-    echo -e "  ${CYAN}5${NC}  启动站点"
-    echo -e "  ${CYAN}6${NC}  停止站点"
-    echo -e "  ${CYAN}7${NC}  重启站点"
-    echo -e "  ${CYAN}8${NC}  更新站点（重新构建）"
-    echo ""
-    echo -e "  ${YELLOW}9${NC}  查看站点日志"
-    echo -e "  ${YELLOW}10${NC} 备份管理"
-    echo -e "  ${YELLOW}11${NC} 删除站点"
-    echo ""
-    echo -e "  ${BLUE}12${NC} 设置 NPM 登录凭据（一键部署前必要）"
-    echo -e "  ${BLUE}13${NC} 更新 manus 工具"
-    echo -e "  ${RED}0${NC}  退出"
-    echo ""
-    print_line
-    echo -e "${YELLOW}请输入选项:${NC} \c"
-    read -r choice
-
-    case "$choice" in
-        1)  cmd_deploy ;;
-        2)  cmd_add ;;
-        3)  cmd_list ;;
-        4)  cmd_status ;;
-        5)  cmd_start ;;
-        6)  cmd_stop ;;
-        7)  cmd_restart ;;
-        8)  cmd_update ;;
-        9)  cmd_logs ;;
-        10) cmd_backup ;;
-        11) cmd_remove ;;
-        12) cmd_npm_login ;;
-        13) cmd_self_update ;;
-        0)  echo "再见！"; exit 0 ;;
-        *)  log_warn "无效选项，请重新输入" ;;
-    esac
-
+        echo -e "${CYAN}╔══════════════════════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║               网站管理                               ║${NC}"
+        echo -e "${CYAN}╚══════════════════════════════════════════════════════╝${NC}"
+        echo -e "  ${GREEN}1${NC}  ★ 一键部署网站     — 从 GitHub 仓库全自动完成"
+        echo -e "  ${GREEN}2${NC}  手动部署网站       — 交互式逐步配置"
+        echo -e "  ${GREEN}3${NC}  查看所有站点"
+        echo -e "  ${GREEN}4${NC}  网站健康监控"
+        echo -e "  ${CYAN}5${NC}  启动/停止/重启站点"
+        echo -e "  ${CYAN}6${NC}  更新站点（重新构建）"
+        echo -e "  ${CYAN}7${NC}  查看站点日志"
+        echo -e "  ${CYAN}8${NC}  备份管理"
+        echo -e "  ${CYAN}9${NC}  删除站点"
+        echo -e "  ${CYAN}10${NC} 克隆/迁移站点"
+        echo -e "  ${CYAN}11${NC} 批量操作"
         echo ""
-        echo -e "${YELLOW}按 Enter 键继续...${NC}"
-        read -r
+        echo -e "${CYAN}╔══════════════════════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║               服务器管理                             ║${NC}"
+        echo -e "${CYAN}╚══════════════════════════════════════════════════════╝${NC}"
+        echo -e "  ${YELLOW}21${NC} 系统信息面板"
+        echo -e "  ${YELLOW}22${NC} Docker 管理中心"
+        echo -e "  ${YELLOW}23${NC} 网络工具 (BBR/DNS/Swap)"
+        echo -e "  ${YELLOW}24${NC} 系统工具 (更新/清理/时区)"
+        echo -e "  ${YELLOW}25${NC} SSL 证书到期检查"
+        echo ""
+        echo -e "${CYAN}╔══════════════════════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║               工具                                   ║${NC}"
+        echo -e "${CYAN}╚══════════════════════════════════════════════════════╝${NC}"
+        echo -e "  ${BLUE}31${NC} 设置 NPM 登录凭据"
+        echo -e "  ${BLUE}32${NC} GitHub 私有仓库配置"
+        echo -e "  ${BLUE}33${NC} 限制管理面板访问 IP"
+        echo -e "  ${BLUE}34${NC} 更新 manus 脚本自身"
+        echo -e "  ${RED}0${NC}  退出"
+        echo ""
+        echo -e "${YELLOW}请输入选项:${NC} \c"
+        read -r choice
+
+        case "$choice" in
+            1)  cmd_deploy ;;
+            2)  cmd_add ;;
+            3)  cmd_list ;;
+            4)  monitor_sites; read -rp "按回车键继续..." ;;
+            5)  _site_control_menu ;;
+            6)  cmd_update ;;
+            7)  cmd_logs ;;
+            8)  cmd_backup ;;
+            9)  cmd_remove ;;
+            10) _clone_migrate_menu ;;
+            11) batch_sites_operation ;;
+            21) show_sysinfo; show_sites_status; read -rp "按回车键继续..." ;;
+            22) docker_main_menu ;;
+            23) network_main_menu ;;
+            24) system_tools_menu ;;
+            25) check_ssl_expiry; read -rp "按回车键继续..." ;;
+            31) cmd_npm_login ;;
+            32) manage_github_token; read -rp "按回车键继续..." ;;
+            33) restrict_admin_ports "${2:-}"; read -rp "按回车键继续..." ;;
+            34) self_update; read -rp "按回车键继续..." ;;
+            0)  echo "再见！"; exit 0 ;;
+            *)  log_warn "无效选项，请重新输入" ;;
+        esac
     done
+}
+
+# ── 站点控制子菜单 ────────────────────────────────────────────────────────────
+_site_control_menu() {
+    clear
+    echo -e "${CYAN}站点控制${NC}"
+    echo ""
+    echo "  1. 启动站点"
+    echo "  2. 停止站点"
+    echo "  3. 重启站点"
+    echo "  0. 返回"
+    echo ""
+    read -rp "请输入选择: " choice
+    case "$choice" in
+        1) cmd_start ;;
+        2) cmd_stop ;;
+        3) cmd_restart ;;
+        0) return ;;
+    esac
+}
+
+# ── 克隆/迁移子菜单 ──────────────────────────────────────────────────────────
+_clone_migrate_menu() {
+    clear
+    echo -e "${CYAN}克隆 / 迁移站点${NC}"
+    echo ""
+    echo "  1. 克隆站点（同服务器复制到新域名）"
+    echo "  2. 迁移站点（跨服务器导出/导入）"
+    echo "  0. 返回"
+    echo ""
+    read -rp "请输入选择: " choice
+    case "$choice" in
+        1) clone_site ;;
+        2) migrate_site ;;
+        0) return ;;
+    esac
+    read -rp "按回车键继续..."
 }
 
 # =============================================================================
@@ -784,9 +851,19 @@ case "${1:-}" in
     backup)      cmd_backup "${2:-}" ;;
     remove|rm|delete) cmd_remove "${2:-}" ;;
     restrict-admin)   restrict_admin_ports "${2:-}" ;;
-    self-update) cmd_self_update ;;
-    help|--help|-h) show_help ;;
-    "")          show_main_menu ;;
+    self-update|update-self) self_update ;;
+    sysinfo|info)    show_sysinfo; show_sites_status ;;
+    docker)          docker_main_menu ;;
+    network|net)     network_main_menu ;;
+    system|sys)      system_tools_menu ;;
+    ssl-check)       check_ssl_expiry ;;
+    github-token)    manage_github_token ;;
+    clone)           clone_site ;;
+    migrate)         migrate_site ;;
+    monitor)         monitor_sites ;;
+    batch)           batch_sites_operation ;;
+    help|--help|-h)  show_help ;;
+    "")              show_main_menu ;;
     *)
         log_error "未知命令: $1"
         show_help
