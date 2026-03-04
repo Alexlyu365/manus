@@ -2,7 +2,9 @@
 # =============================================================================
 # docker.sh — Docker 安装与管理函数库（安全加固版）
 # 项目: manus-deploy
+# 支持系统: Ubuntu 20.04/22.04/24.04, Debian 11/12 (Bookworm)
 # 修订: SEC-01 Docker Socket Proxy、SEC-05 MySQL root host、SEC-08 资源限制
+#       Debian 12 适配: Docker 官方源 codename 获取方式
 # =============================================================================
 
 # ── 安装 Docker ──────────────────────────────────────────────────────────────
@@ -21,17 +23,36 @@ install_docker() {
             # 移除旧版本
             apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
 
-            # 添加 Docker 官方 GPG 密钥
+            # 安装 GPG 依赖
+            apt-get install -y ca-certificates curl gnupg lsb-release
+
+            # 创建密钥目录
             install -m 0755 -d /etc/apt/keyrings
-            curl -fsSL https://download.docker.com/linux/${OS_ID}/gpg \
+
+            # 添加 Docker 官方 GPG 密钥
+            curl -fsSL "https://download.docker.com/linux/${OS_ID}/gpg" \
                 | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
             chmod a+r /etc/apt/keyrings/docker.gpg
+
+            # ── Debian 12 关键适配 ────────────────────────────────────────────
+            # Debian 12 的 VERSION_CODENAME=bookworm，Docker 官方源支持 bookworm。
+            # 但 lsb_release -cs 在 Debian 12 上返回 "bookworm"，与 Ubuntu 返回
+            # "jammy" 的方式一致，所以可以统一使用 $(. /etc/os-release && echo "$VERSION_CODENAME")
+            # 注意: 不能使用 $(lsb_release -cs)，因为 Debian 最小安装可能没有 lsb-release
+            local codename
+            codename=$(. /etc/os-release && echo "${VERSION_CODENAME}")
+            if [ -z "$codename" ]; then
+                # 回退：通过 lsb_release 获取
+                codename=$(lsb_release -cs 2>/dev/null || echo "bookworm")
+            fi
+
+            log_info "使用 Docker 源 codename: ${codename}"
 
             # 添加 Docker 软件源
             echo \
                 "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
                 https://download.docker.com/linux/${OS_ID} \
-                $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+                ${codename} stable" \
                 | tee /etc/apt/sources.list.d/docker.list > /dev/null
 
             apt-get update -y
@@ -173,9 +194,6 @@ EOF
 }
 
 # ── SEC-01 修复: 使用 Docker Socket Proxy 保护 Portainer ─────────────────────
-# 原方案直接挂载 /var/run/docker.sock 到 Portainer，等同于给容器 root 权限。
-# 修复方案: 引入 docker-socket-proxy，仅暴露 Portainer 所需的只读 API，
-#           屏蔽危险操作（如创建特权容器、执行命令等）。
 deploy_portainer() {
     log_step "部署 Portainer（通过 Docker Socket Proxy 安全访问）..."
 
@@ -187,7 +205,6 @@ version: '3.8'
 
 services:
   # ── Docker Socket Proxy（安全代理，限制 Docker API 访问权限）────────────────
-  # 仅暴露 Portainer 所需的 API，屏蔽危险操作
   socket-proxy:
     image: tecnativa/docker-socket-proxy:latest
     container_name: docker-socket-proxy
@@ -195,7 +212,6 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
-      # 允许的 API（Portainer 需要）
       CONTAINERS: 1
       SERVICES: 1
       TASKS: 1
@@ -207,12 +223,10 @@ services:
       EVENTS: 1
       PING: 1
       VERSION: 1
-      # 允许 Portainer 执行操作（如启停容器）
       POST: 1
-      # 禁止危险操作
-      EXEC: 0        # 禁止在容器内执行命令
-      BUILD: 0       # 禁止构建镜像
-      COMMIT: 0      # 禁止提交容器为镜像
+      EXEC: 0
+      BUILD: 0
+      COMMIT: 0
       CONFIGS: 0
       DISTRIBUTION: 0
       PLUGINS: 0
@@ -220,14 +234,12 @@ services:
       SWARM: 0
     networks:
       - socket_proxy_network
-    # Socket Proxy 不对外暴露端口，仅在内部网络中可访问
     deploy:
       resources:
         limits:
           memory: 64M
           cpus: '0.25'
 
-  # ── Portainer（连接到 Socket Proxy，而非直接挂载 Docker Socket）────────────
   portainer:
     image: portainer/portainer-ce:2.21.5
     container_name: portainer
@@ -237,7 +249,6 @@ services:
       - "9443:9443"
     volumes:
       - ./data:/data
-    # 通过 Socket Proxy 访问 Docker API，而非直接挂载 docker.sock
     environment:
       - DOCKER_HOST=tcp://socket-proxy:2375
     networks:
@@ -254,10 +265,9 @@ services:
 networks:
   npm_network:
     external: true
-  # Socket Proxy 专用隔离网络，仅 Portainer 可访问
   socket_proxy_network:
     driver: bridge
-    internal: true   # 内部网络，不能访问外部互联网
+    internal: true
 EOF
 
     cd "$PORTAINER_DIR"
@@ -267,13 +277,10 @@ EOF
     echo ""
     echo -e "${GREEN}  Portainer 管理界面: http://$(get_public_ip):9000${NC}"
     echo -e "${YELLOW}  首次访问请在 5 分钟内设置管理员密码${NC}"
-    echo -e "${GREEN}  安全说明: 已通过 Socket Proxy 限制 Docker API 访问权限${NC}"
     echo ""
 }
 
 # ── SEC-05 修复: 部署 MySQL（修复 root host 配置）────────────────────────────
-# 原配置 MYSQL_ROOT_HOST='%' 允许 root 从任意主机连接。
-# 修复: 改为 localhost，并将 MySQL 移入独立网络，与站点容器隔离。
 deploy_mysql() {
     log_step "部署 MySQL 8.0 数据库（安全加固版）..."
 
@@ -291,35 +298,23 @@ deploy_mysql() {
         chmod 600 /opt/manus/.mysql_root_pass
     fi
 
-    # 创建 MySQL 专用网络（与站点容器隔离）
+    # 创建 MySQL 专用网络
     create_docker_network "mysql_network"
 
-    # MySQL 优化配置（针对产品展示类网站）
     cat > "${MYSQL_DIR}/conf/my.cnf" << 'EOF'
 [mysqld]
-# 字符集
 character-set-server = utf8mb4
 collation-server = utf8mb4_unicode_ci
-
-# 连接
 max_connections = 200
 wait_timeout = 600
 interactive_timeout = 600
-
-# 缓存（根据服务器内存调整）
 innodb_buffer_pool_size = 256M
 innodb_log_file_size = 64M
 innodb_flush_log_at_trx_commit = 2
-
-# 大文件支持（媒体元数据）
 max_allowed_packet = 64M
-
-# 慢查询日志
 slow_query_log = 1
 slow_query_log_file = /var/log/mysql/slow.log
 long_query_time = 2
-
-# 安全加固
 local_infile = 0
 symbolic-links = 0
 
@@ -327,16 +322,11 @@ symbolic-links = 0
 default-character-set = utf8mb4
 EOF
 
-    # 初始化脚本：删除匿名用户和测试数据库
     cat > "${MYSQL_DIR}/init/01-security-hardening.sql" << 'EOF'
--- 删除匿名用户
 DELETE FROM mysql.user WHERE User='';
--- 删除测试数据库
 DROP DATABASE IF EXISTS test;
 DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
--- 确保 root 仅允许本机连接（修复 SEC-05）
 DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
--- 刷新权限
 FLUSH PRIVILEGES;
 EOF
     chmod 644 "${MYSQL_DIR}/init/01-security-hardening.sql"
@@ -349,19 +339,16 @@ services:
     image: mysql:8.0
     container_name: manus-mysql
     restart: unless-stopped
-    # SEC-05 修复: 仅绑定本机，不对外暴露
     ports:
       - "127.0.0.1:3306:3306"
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASS}
-      # SEC-05 修复: root 仅允许 localhost 连接（原为 '%'）
       MYSQL_ROOT_HOST: 'localhost'
       TZ: Asia/Shanghai
     volumes:
       - ./data:/var/lib/mysql
       - ./conf/my.cnf:/etc/mysql/conf.d/custom.cnf:ro
       - ./init:/docker-entrypoint-initdb.d:ro
-    # SEC-08: 资源限制
     deploy:
       resources:
         limits:
@@ -391,7 +378,6 @@ EOF
     cd "$MYSQL_DIR"
     docker compose up -d
 
-    # 等待 MySQL 就绪
     wait_for_service "127.0.0.1" "3306" 60
 
     log_success "MySQL 8.0 部署完成（安全加固：root 仅本机，独立网络）"
@@ -404,7 +390,6 @@ EOF
 # ── 为站点创建独立 MySQL 数据库和用户 ────────────────────────────────────────
 create_site_database() {
     local domain="$1"
-    # 将域名转为合法的数据库名（去掉点和特殊字符）
     local db_name
     db_name=$(echo "$domain" | tr '.' '_' | tr '-' '_' | tr '[:upper:]' '[:lower:]')
     db_name="site_${db_name}"
@@ -423,7 +408,6 @@ create_site_database() {
 
     log_step "为站点 ${domain} 创建独立数据库..."
 
-    # SEC-05: 站点用户仅允许从 MySQL 网络内部连接（通过容器名）
     docker exec manus-mysql mysql -u root -p"${root_pass}" -e "
         CREATE DATABASE IF NOT EXISTS \`${db_name}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
         CREATE USER IF NOT EXISTS '${db_user}'@'%' IDENTIFIED BY '${db_pass}';
@@ -431,7 +415,6 @@ create_site_database() {
         FLUSH PRIVILEGES;
     " 2>/dev/null
 
-    # 保存数据库信息到站点目录
     local site_dir="/opt/sites/${domain}"
     mkdir -p "$site_dir"
     cat > "${site_dir}/.db_info" << EOF
@@ -471,7 +454,6 @@ drop_site_database() {
 # ── 将站点容器接入 MySQL 网络 ─────────────────────────────────────────────────
 connect_site_to_mysql() {
     local container_name="$1"
-    # 将需要数据库的站点容器加入 mysql_network
     docker network connect mysql_network "$container_name" 2>/dev/null || true
     log_info "站点容器 ${container_name} 已接入 MySQL 网络"
 }

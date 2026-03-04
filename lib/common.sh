@@ -2,8 +2,7 @@
 # =============================================================================
 # common.sh — 通用函数库
 # 项目: manus-deploy
-# 作者: Alexlyu365
-# 说明: 提供颜色输出、日志记录、系统检测、工具函数等基础能力
+# 支持系统: Ubuntu 20.04/22.04/24.04, Debian 11/12 (Bookworm)
 # =============================================================================
 
 # ── 颜色定义 ─────────────────────────────────────────────────────────────────
@@ -49,37 +48,51 @@ confirm() {
 }
 
 # ── 检测操作系统 ─────────────────────────────────────────────────────────────
+# 支持: Ubuntu 20.04/22.04/24.04, Debian 11 (Bullseye), Debian 12 (Bookworm)
 detect_os() {
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        OS_ID="$ID"
-        OS_VERSION="$VERSION_ID"
-        OS_CODENAME="${VERSION_CODENAME:-}"
-    else
+    if [ ! -f /etc/os-release ]; then
         log_error "无法检测操作系统，仅支持 Ubuntu/Debian/CentOS"
         exit 1
     fi
+
+    . /etc/os-release
+    OS_ID="${ID}"
+    OS_VERSION="${VERSION_ID}"
+    OS_CODENAME="${VERSION_CODENAME:-}"
 
     case "$OS_ID" in
         ubuntu|debian)
             PKG_MANAGER="apt-get"
             PKG_UPDATE="apt-get update -y"
             PKG_INSTALL="apt-get install -y"
+
+            # Debian 12 (Bookworm) 特殊处理
+            # Debian 12 默认不安装 sudo，且 cron 服务名为 cron（与 Ubuntu 一致）
+            # 但 Debian 12 的 /etc/os-release 中 VERSION_CODENAME=bookworm
+            if [ "$OS_ID" = "debian" ]; then
+                IS_DEBIAN=true
+                DEBIAN_VERSION="$OS_VERSION"
+                log_info "检测到 Debian ${OS_VERSION} (${OS_CODENAME})"
+            else
+                IS_DEBIAN=false
+            fi
             ;;
         centos|rhel|fedora|rocky|almalinux)
             PKG_MANAGER="yum"
             PKG_UPDATE="yum update -y"
             PKG_INSTALL="yum install -y"
+            IS_DEBIAN=false
             ;;
         *)
             log_warn "未经测试的系统: $OS_ID，尝试使用 apt-get"
             PKG_MANAGER="apt-get"
             PKG_UPDATE="apt-get update -y"
             PKG_INSTALL="apt-get install -y"
+            IS_DEBIAN=false
             ;;
     esac
 
-    log_info "检测到系统: ${OS_ID} ${OS_VERSION}"
+    log_info "检测到系统: ${OS_ID} ${OS_VERSION} (${OS_CODENAME:-unknown})"
 }
 
 # ── 检查 root 权限 ───────────────────────────────────────────────────────────
@@ -96,18 +109,51 @@ command_exists() {
 }
 
 # ── 安装基础软件包 ───────────────────────────────────────────────────────────
+# Debian 12 差异:
+#   - 包名 dnsutils → bind9-dnsutils (Debian 12 中已更名)
+#   - 需要额外安装 sudo（Debian 最小安装不含 sudo）
+#   - 需要安装 procps（提供 ps 命令，Debian 最小安装可能缺少）
+#   - 需要安装 iproute2（提供 ss 命令，替代 netstat）
 install_base_packages() {
     log_step "安装基础依赖包..."
     $PKG_UPDATE
-    $PKG_INSTALL \
-        curl wget git vim nano htop \
-        net-tools dnsutils \
-        ca-certificates gnupg lsb-release \
-        unzip zip tar \
-        openssl \
-        cron \
-        jq \
-        2>/dev/null
+
+    # 通用包（Ubuntu 和 Debian 均有）
+    local common_pkgs=(
+        curl wget git vim nano htop
+        ca-certificates gnupg lsb-release
+        unzip zip tar
+        openssl
+        cron
+        jq
+        net-tools
+        iproute2
+        procps
+        apt-transport-https
+        software-properties-common
+    )
+
+    # 根据系统版本选择正确的 DNS 工具包名
+    if [ "${IS_DEBIAN:-false}" = "true" ] && dpkg --compare-versions "$OS_VERSION" ge "12" 2>/dev/null; then
+        # Debian 12: dnsutils 已被 bind9-dnsutils 替代
+        # 但 dnsutils 作为过渡包仍可安装，保持兼容
+        common_pkgs+=(dnsutils)
+    else
+        common_pkgs+=(dnsutils)
+    fi
+
+    $PKG_INSTALL "${common_pkgs[@]}" 2>/dev/null || true
+
+    # Debian 特有：确保 sudo 已安装（Google Cloud Debian 镜像通常已有，但最小镜像可能没有）
+    if [ "${IS_DEBIAN:-false}" = "true" ] && ! command_exists sudo; then
+        log_info "Debian 系统：安装 sudo..."
+        apt-get install -y sudo
+    fi
+
+    # 确保 cron 服务启动（Debian 12 服务名为 cron，Ubuntu 也是 cron）
+    systemctl enable cron 2>/dev/null || systemctl enable crond 2>/dev/null || true
+    systemctl start cron 2>/dev/null || systemctl start crond 2>/dev/null || true
+
     log_success "基础依赖包安装完成"
 }
 
@@ -149,7 +195,16 @@ wait_for_service() {
     local elapsed=0
 
     log_info "等待服务 ${host}:${port} 就绪..."
-    while ! nc -z "$host" "$port" 2>/dev/null; do
+
+    # 优先使用 nc（netcat），Debian/Ubuntu 均有
+    local check_cmd
+    if command_exists nc; then
+        check_cmd="nc -z $host $port"
+    elif command_exists bash; then
+        check_cmd="bash -c 'echo > /dev/tcp/$host/$port' 2>/dev/null"
+    fi
+
+    while ! eval "$check_cmd" 2>/dev/null; do
         sleep 2
         elapsed=$((elapsed + 2))
         if [ "$elapsed" -ge "$timeout" ]; then
@@ -163,7 +218,20 @@ wait_for_service() {
 }
 
 # ── 获取服务器公网 IP ────────────────────────────────────────────────────────
+# Google Cloud 服务器可通过元数据服务获取外部 IP
 get_public_ip() {
+    # 优先尝试 Google Cloud 元数据服务（GCE 实例专用，速度最快）
+    local gce_ip
+    gce_ip=$(curl -s --max-time 3 \
+        -H "Metadata-Flavor: Google" \
+        "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/externalIp" \
+        2>/dev/null)
+    if [ -n "$gce_ip" ] && [[ "$gce_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "$gce_ip"
+        return
+    fi
+
+    # 通用回退方案
     curl -s --max-time 10 https://api.ipify.org \
         || curl -s --max-time 10 https://ifconfig.me \
         || curl -s --max-time 10 https://icanhazip.com \
@@ -181,7 +249,6 @@ register_site() {
     created_at=$(date '+%Y-%m-%d %H:%M:%S')
 
     mkdir -p /opt/manus
-    # 若已存在则更新，否则追加
     if grep -q "^${domain}|" "$SITES_REGISTRY" 2>/dev/null; then
         sed -i "s|^${domain}|.*|${domain}|${type}|${port}|${created_at}|" "$SITES_REGISTRY"
     else

@@ -3,7 +3,8 @@
 # server-init.sh — 服务器一键初始化脚本（安全加固版）
 # 项目: manus-deploy
 # 用法: bash <(curl -fsSL https://raw.githubusercontent.com/Alexlyu365/manus/main/server-init.sh)
-# 适用: Ubuntu 20.04 / 22.04 / 24.04
+# 适用: Ubuntu 20.04 / 22.04 / 24.04, Debian 11 / 12 (Bookworm)
+# Google Cloud: 默认系统 Debian 12 完整支持
 #
 # 安全加固修订:
 #   SEC-03: 添加脚本完整性提示和 SSH 密钥前置检查
@@ -100,6 +101,21 @@ check_ssh_key() {
 main() {
     clear
     print_banner
+
+    # ── Debian 12 / Google Cloud 特有提示 ──────────────────────────────────
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        if [ "$ID" = "debian" ]; then
+            echo -e "${CYAN}检测到 Debian ${VERSION_ID} (${VERSION_CODENAME:-})${NC}"
+            echo ""
+            # Google Cloud Debian 默认用户为 非root 用户（如 user），需要 sudo
+            if [ "$EUID" -ne 0 ]; then
+                echo -e "${YELLOW}提示: Google Cloud Debian 服务器请使用 sudo 运行本脚本${NC}"
+                echo -e "${YELLOW}命令: sudo bash <(curl -fsSL https://raw.githubusercontent.com/Alexlyu365/manus/main/server-init.sh)${NC}"
+                echo ""
+            fi
+        fi
+    fi
 
     echo -e "${WHITE}本脚本将在您的服务器上完成以下操作：${NC}"
     echo ""

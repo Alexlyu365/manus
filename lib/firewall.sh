@@ -2,7 +2,9 @@
 # =============================================================================
 # firewall.sh — UFW 防火墙配置函数库（安全加固版）
 # 项目: manus-deploy
+# 支持系统: Ubuntu 20.04/22.04/24.04, Debian 11/12 (Bookworm)
 # 修订: SEC-02 修复 Docker 绕过 UFW、SEC-06 添加 Fail2ban、SEC-07 强制 SSH 密钥认证
+#       Debian 12 适配: 网卡名称自动检测、Fail2ban backend、SSH 服务名
 # =============================================================================
 
 # ── 安装并配置 UFW 防火墙 ────────────────────────────────────────────────────
@@ -17,6 +19,7 @@ setup_firewall() {
     # ── 关键修复 SEC-02: 防止 Docker 绕过 UFW ────────────────────────────────
     # Docker 默认会直接操作 iptables，绕过 UFW 规则。
     # 通过在 /etc/ufw/after.rules 末尾添加 DOCKER-USER 链规则来修复。
+    # 注意: Google Cloud 服务器的网卡名通常为 ens4（而非 eth0），需要自动检测
     _fix_docker_ufw_bypass
 
     # 重置为默认规则
@@ -47,6 +50,22 @@ setup_firewall() {
     ufw status numbered
 }
 
+# ── 自动检测主网卡名称 ───────────────────────────────────────────────────────
+# Google Cloud (Debian 12): 网卡名为 ens4
+# 普通 Ubuntu/Debian VPS:   网卡名为 eth0
+# 部分云服务商:              网卡名为 enp0s3、ens3 等
+_get_main_iface() {
+    # 方法1: 通过默认路由获取出口网卡（最可靠）
+    local iface
+    iface=$(ip route show default 2>/dev/null | awk '/default/ {print $5}' | head -1)
+    if [ -n "$iface" ]; then
+        echo "$iface"
+        return
+    fi
+    # 方法2: 回退到 eth0
+    echo "eth0"
+}
+
 # ── SEC-02 修复: 防止 Docker 绕过 UFW ────────────────────────────────────────
 # Docker 在 iptables 中创建 DOCKER 链，直接绕过 UFW 规则。
 # 解决方案: 在 DOCKER-USER 链中添加规则，阻止外部直接访问容器端口。
@@ -54,34 +73,32 @@ setup_firewall() {
 _fix_docker_ufw_bypass() {
     log_step "修复 Docker 绕过 UFW 的安全问题..."
 
-    # 方案1: 在 after.rules 中添加 DOCKER-USER 链规则
-    # 允许已建立的连接和本机回环，拒绝其他外部直接访问容器
+    # ── 自动检测网卡名 ────────────────────────────────────────────────────────
+    # Google Cloud Debian 12 服务器网卡名为 ens4，不是 eth0
+    local MAIN_IFACE
+    MAIN_IFACE=$(_get_main_iface)
+    log_info "检测到主网卡: ${MAIN_IFACE}"
+
     local UFW_AFTER_RULES="/etc/ufw/after.rules"
 
     if ! grep -q "DOCKER-USER" "$UFW_AFTER_RULES" 2>/dev/null; then
-        cat >> "$UFW_AFTER_RULES" << 'EOF'
+        cat >> "$UFW_AFTER_RULES" << EOF
 
-# ── manus-deploy: 防止 Docker 绕过 UFW ──────────────────────────────────────
-# 允许已建立的连接通过
+# ── manus-deploy: 防止 Docker 绕过 UFW (网卡: ${MAIN_IFACE}) ────────────────
 *filter
 :DOCKER-USER - [0:0]
--A DOCKER-USER -i eth0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
--A DOCKER-USER -i eth0 -m conntrack --ctstate INVALID -j DROP
-# 允许本机回环
+-A DOCKER-USER -i ${MAIN_IFACE} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+-A DOCKER-USER -i ${MAIN_IFACE} -m conntrack --ctstate INVALID -j DROP
 -A DOCKER-USER -i lo -j ACCEPT
-# 允许 HTTP/HTTPS（由 NPM 处理）
--A DOCKER-USER -i eth0 -p tcp --dport 80 -j ACCEPT
--A DOCKER-USER -i eth0 -p tcp --dport 443 -j ACCEPT
-# 允许 NPM 管理界面
--A DOCKER-USER -i eth0 -p tcp --dport 81 -j ACCEPT
-# 允许 Portainer
--A DOCKER-USER -i eth0 -p tcp --dport 9000 -j ACCEPT
--A DOCKER-USER -i eth0 -p tcp --dport 9443 -j ACCEPT
-# 拒绝其他外部直接访问容器端口（防止 Docker 绕过 UFW）
--A DOCKER-USER -i eth0 -j DROP
+-A DOCKER-USER -i ${MAIN_IFACE} -p tcp --dport 80 -j ACCEPT
+-A DOCKER-USER -i ${MAIN_IFACE} -p tcp --dport 443 -j ACCEPT
+-A DOCKER-USER -i ${MAIN_IFACE} -p tcp --dport 81 -j ACCEPT
+-A DOCKER-USER -i ${MAIN_IFACE} -p tcp --dport 9000 -j ACCEPT
+-A DOCKER-USER -i ${MAIN_IFACE} -p tcp --dport 9443 -j ACCEPT
+-A DOCKER-USER -i ${MAIN_IFACE} -j DROP
 COMMIT
 EOF
-        log_success "已添加 DOCKER-USER 链规则，防止 Docker 绕过 UFW"
+        log_success "已添加 DOCKER-USER 链规则（网卡: ${MAIN_IFACE}）"
     else
         log_info "DOCKER-USER 链规则已存在，跳过"
     fi
@@ -168,8 +185,16 @@ harden_ssh() {
         echo "LoginGraceTime 30" >> /etc/ssh/sshd_config
     fi
 
-    # 重启 SSH 服务
-    systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || true
+    # ── Debian 12 适配: SSH 服务名 ──────────────────────────────────────────
+    # Debian 12: 服务名为 ssh（不是 sshd）
+    # Ubuntu:    服务名为 ssh 或 sshd（两者均可）
+    if systemctl list-units --type=service | grep -q 'ssh\.service'; then
+        systemctl reload ssh
+    elif systemctl list-units --type=service | grep -q 'sshd\.service'; then
+        systemctl reload sshd
+    else
+        log_warn "未找到 SSH 服务，请手动重启 SSH"
+    fi
 
     log_success "SSH 安全加固完成（密码登录已禁用，仅允许密钥认证）"
     log_warn "请确保您已配置 SSH 密钥，否则将无法登录服务器！"
@@ -184,6 +209,13 @@ setup_fail2ban() {
         $PKG_INSTALL fail2ban
     fi
 
+    # ── Debian 12 适配: 检测 Fail2ban 可用的日志后端 ────────────────────────
+    # Debian 12 默认使用 systemd/journald，backend = systemd 是正确的。
+    # 但需要确认 python3-systemd 已安装（Fail2ban systemd 后端依赖）。
+    if [ "${IS_DEBIAN:-false}" = "true" ] || command_exists journalctl; then
+        $PKG_INSTALL python3-systemd 2>/dev/null || true
+    fi
+
     # 创建本地配置（覆盖默认配置，避免升级时被覆盖）
     cat > /etc/fail2ban/jail.local << 'EOF'
 [DEFAULT]
@@ -195,7 +227,7 @@ findtime = 600
 maxretry = 5
 # 忽略本机 IP
 ignoreip = 127.0.0.1/8 ::1
-# 使用 systemd 后端
+# 使用 systemd 后端（Debian 12 和 Ubuntu 22.04+ 均使用 journald）
 backend = systemd
 
 # ── SSH 防暴力破解 ────────────────────────────────────────────────────────────
@@ -323,9 +355,13 @@ setup_auto_security_updates() {
         # 配置仅自动安装安全更新
         cat > /etc/apt/apt.conf.d/50unattended-upgrades << 'EOF'
 Unattended-Upgrade::Allowed-Origins {
+    // Ubuntu 安全更新
     "${distro_id}:${distro_codename}-security";
     "${distro_id}ESMApps:${distro_codename}-apps-security";
     "${distro_id}ESM:${distro_codename}-infra-security";
+    // Debian 安全更新（Debian 12 Bookworm）
+    "Debian:${distro_codename}-security";
+    "Debian:stable-security";
 };
 
 // 自动删除不再需要的依赖
