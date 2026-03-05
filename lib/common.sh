@@ -118,29 +118,17 @@ install_base_packages() {
     log_step "安装基础依赖包..."
     $PKG_UPDATE
 
-    # 通用包（Ubuntu 和 Debian 均有）
+    # 通用包（精简版：仅安装必要工具）
     local common_pkgs=(
-        curl wget git vim nano htop
-        ca-certificates gnupg lsb-release
-        unzip zip tar
+        curl wget git
+        ca-certificates gnupg
+        unzip tar
         openssl
         cron
         jq
-        net-tools
         iproute2
         procps
-        apt-transport-https
-        software-properties-common
     )
-
-    # 根据系统版本选择正确的 DNS 工具包名
-    if [ "${IS_DEBIAN:-false}" = "true" ] && dpkg --compare-versions "$OS_VERSION" ge "12" 2>/dev/null; then
-        # Debian 12: dnsutils 已被 bind9-dnsutils 替代
-        # 但 dnsutils 作为过渡包仍可安装，保持兼容
-        common_pkgs+=(dnsutils)
-    else
-        common_pkgs+=(dnsutils)
-    fi
 
     $PKG_INSTALL "${common_pkgs[@]}" 2>/dev/null || true
 

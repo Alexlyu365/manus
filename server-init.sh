@@ -123,16 +123,17 @@ main() {
 
     echo -e "${WHITE}本脚本将在您的服务器上完成以下操作：${NC}"
     echo ""
-    echo "  1.  配置 1GB Swap 虚拟内存（防止 OOM 崩溃）"
+    echo "  1.  配置 2GB Swap 虚拟内存（防止 OOM 崩溃）"
     echo "  2.  更新系统软件包"
-    echo "  3.  安装基础工具（curl、git、vim 等）"
+    echo "  3.  安装基础工具（curl、git 等必要工具）"
     echo "  4.  安装 Docker Engine"
     echo "  5.  优化系统内核参数"
     echo "  6.  配置 UFW 防火墙（修复 Docker 绕过问题）"
     echo "  7.  加固 SSH 安全（禁用密码登录）"
     echo "  8.  安装 Fail2ban（防暴力破解）"
-    echo "  9.  部署 Nginx Proxy Manager（端口 81）"
-    echo "  10. 安装 manus 管理工具"
+    echo "  9.  配置自动安全更新"
+    echo "  10. 部署 Nginx Proxy Manager（端口 81）"
+    echo "  11. 安装 manus 管理工具"
     echo ""
     echo -e "${CYAN}  注：MySQL 和 Portainer 为按需安装，不占用初始内存${NC}"
     echo -e "${CYAN}      需要时执行 'manus install-mysql' 或 'manus install-portainer'${NC}"
@@ -156,11 +157,11 @@ main() {
     detect_os
 
     # ── Step 2: 配置 Swap（第一步，防止后续安装 OOM）────────────────────────
-    log_step "[1/10] 配置 Swap 虚拟内存..."
-    setup_swap "1G"
+    log_step "[1/11] 配置 Swap 虚拟内存..."
+    setup_swap "2G"
 
     # ── Step 3: 更新系统 ─────────────────────────────────────────────────────
-    log_step "[2/10] 更新系统软件包..."
+    log_step "[2/11] 更新系统软件包..."
     $PKG_UPDATE
     if [ "$PKG_MANAGER" = "apt-get" ]; then
         DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
@@ -168,33 +169,37 @@ main() {
     log_success "系统更新完成"
 
     # ── Step 4: 安装基础工具 ─────────────────────────────────────────────────
-    log_step "[3/10] 安装基础工具..."
+    log_step "[3/11] 安装基础工具..."
     install_base_packages
 
     # ── Step 5: 安装 Docker ──────────────────────────────────────────────────
-    log_step "[4/10] 安装 Docker..."
+    log_step "[4/11] 安装 Docker..."
     install_docker
     configure_docker_daemon
 
     # ── Step 6: 优化系统参数 ─────────────────────────────────────────────────
-    log_step "[5/10] 优化系统参数..."
+    log_step "[5/11] 优化系统参数..."
     configure_sysctl
     configure_limits
 
     # ── Step 7: 配置防火墙 ───────────────────────────────────────────────────
-    log_step "[6/10] 配置防火墙（修复 Docker UFW 绕过）..."
+    log_step "[6/11] 配置防火墙（修复 Docker UFW 绕过）..."
     setup_firewall
 
-    # ── Step 8: 加固 SSH ─────────────────────────────────────────────────────
-    log_step "[7/10] 加固 SSH 安全配置..."
+      # ── Step 8: 加固 SSH ──────────────────────────────────────────────
+    log_step "[7/11] 加固 SSH 安全配置..."
     harden_ssh
 
-    # ── Step 9: 安装 Fail2ban ────────────────────────────────────────────────
-    log_step "[8/10] 安装 Fail2ban（防暴力破解）..."
+    # ── Step 9: 安装 Fail2ban ─────────────────────────────────────────────────
+    log_step "[8/11] 安装 Fail2ban（防暴力破解）..."
     setup_fail2ban
 
-    # ── Step 10: 创建目录结构 ────────────────────────────────────────────────
-    log_step "[9/10] 创建目录结构..."
+    # ── Step 9.5: 配置自动安全更新 ───────────────────────────────────
+    log_step "[9/11] 配置自动安全更新..."
+    setup_auto_security_updates
+
+    # ── Step 10: 创建目录结构 ────────────────────────────────────────
+    log_step "[10/11] 创建目录结构..."
     mkdir -p /opt/manus/{lib,scripts,backups}
     mkdir -p /opt/sites
     touch /opt/manus/sites.conf
@@ -205,8 +210,8 @@ main() {
     # GitHub Token 自动配置
     setup_github_token
 
-    # ── Step 11: 部署 NPM ────────────────────────────────────────────────────
-    log_step "[10/10] 部署 Nginx Proxy Manager..."
+    # ── Step 11: 部署 NPM ────────────────────────────────────────────
+    log_step "[11/11] 部署 Nginx Proxy Manager..."
     deploy_nginx_proxy_manager
 
     # ── Step 12: 安装 manus 管理工具 ─────────────────────────────────────────
