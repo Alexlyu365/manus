@@ -1,10 +1,13 @@
 #!/bin/bash
 # =============================================================================
-# docker.sh — Docker 安装与管理函数库（安全加固版）
+# docker.sh — Docker 安装与管理函数库（轻量化版 v2）
 # 项目: manus-deploy
-# 支持系统: Ubuntu 20.04/22.04/24.04, Debian 11/12 (Bookworm)
-# 修订: SEC-01 Docker Socket Proxy、SEC-05 MySQL root host、SEC-08 资源限制
-#       Debian 12 适配: Docker 官方源 codename 获取方式
+# 适用: Ubuntu 20.04/22.04/24.04, Debian 11/12 (Bookworm)
+# 轻量化修订:
+#   - 移除 MySQL 和 Portainer 默认安装（改为按需部署）
+#   - NPM 内存限制从 512M 降至 150M
+#   - 新增 setup_swap 函数（1GB Swap，防止 OOM）
+#   - Docker daemon 日志限制从 50M 降至 10M
 # =============================================================================
 
 # ── 安装 Docker ──────────────────────────────────────────────────────────────
@@ -20,35 +23,20 @@ install_docker() {
 
     case "$OS_ID" in
         ubuntu|debian)
-            # 移除旧版本
             apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
-
-            # 安装 GPG 依赖
             apt-get install -y ca-certificates curl gnupg lsb-release
-
-            # 创建密钥目录
             install -m 0755 -d /etc/apt/keyrings
-
-            # 添加 Docker 官方 GPG 密钥
             curl -fsSL "https://download.docker.com/linux/${OS_ID}/gpg" \
                 | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
             chmod a+r /etc/apt/keyrings/docker.gpg
 
-            # ── Debian 12 关键适配 ────────────────────────────────────────────
-            # Debian 12 的 VERSION_CODENAME=bookworm，Docker 官方源支持 bookworm。
-            # 但 lsb_release -cs 在 Debian 12 上返回 "bookworm"，与 Ubuntu 返回
-            # "jammy" 的方式一致，所以可以统一使用 $(. /etc/os-release && echo "$VERSION_CODENAME")
-            # 注意: 不能使用 $(lsb_release -cs)，因为 Debian 最小安装可能没有 lsb-release
             local codename
             codename=$(. /etc/os-release && echo "${VERSION_CODENAME}")
             if [ -z "$codename" ]; then
-                # 回退：通过 lsb_release 获取
                 codename=$(lsb_release -cs 2>/dev/null || echo "bookworm")
             fi
-
             log_info "使用 Docker 源 codename: ${codename}"
 
-            # 添加 Docker 软件源
             echo \
                 "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
                 https://download.docker.com/linux/${OS_ID} \
@@ -77,11 +65,9 @@ install_docker() {
             ;;
     esac
 
-    # 启动并设置开机自启
     systemctl enable docker
     systemctl start docker
 
-    # 验证安装
     if command_exists docker; then
         log_success "Docker 安装成功: $(docker --version)"
     else
@@ -90,17 +76,17 @@ install_docker() {
     fi
 }
 
-# ── 配置 Docker 守护进程（日志限制、安全加固）────────────────────────────────
+# ── 配置 Docker 守护进程（轻量化 + 安全加固）────────────────────────────────
 configure_docker_daemon() {
-    log_step "配置 Docker 守护进程（安全加固）..."
+    log_step "配置 Docker 守护进程（轻量化 + 安全加固）..."
 
     mkdir -p /etc/docker
     cat > /etc/docker/daemon.json << 'EOF'
 {
   "log-driver": "json-file",
   "log-opts": {
-    "max-size": "50m",
-    "max-file": "5"
+    "max-size": "10m",
+    "max-file": "3"
   },
   "storage-driver": "overlay2",
   "live-restore": true,
@@ -108,14 +94,45 @@ configure_docker_daemon() {
   "userland-proxy": false
 }
 EOF
-    # 说明:
-    # no-new-privileges: 防止容器内进程通过 setuid/setgid 提升权限
-    # userland-proxy: 禁用用户空间代理，使用 iptables 规则替代，减少攻击面
-    # live-restore: 重启 Docker 时容器继续运行
+    # 日志限制从 50M×5 降至 10M×3，节省磁盘空间
+    # no-new-privileges: 防止容器内进程提权
+    # userland-proxy: 禁用，减少内存占用
 
     systemctl daemon-reload
     systemctl restart docker
-    log_success "Docker 守护进程配置完成（安全加固）"
+    log_success "Docker 守护进程配置完成"
+}
+
+# ── 配置 Swap 虚拟内存（防止 OOM，低配服务器必须）────────────────────────────
+setup_swap() {
+    local swap_size="${1:-1G}"
+
+    # 检查是否已有 Swap
+    if swapon --show | grep -q "/swapfile"; then
+        log_info "Swap 已存在，跳过"
+        return 0
+    fi
+
+    log_step "配置 ${swap_size} Swap 虚拟内存（防止 OOM）..."
+
+    # 创建 Swap 文件
+    fallocate -l "$swap_size" /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=1024 status=none
+    chmod 600 /swapfile
+    mkswap /swapfile
+    swapon /swapfile
+
+    # 开机自动挂载
+    if ! grep -q "/swapfile" /etc/fstab; then
+        echo '/swapfile none swap sw 0 0' >> /etc/fstab
+    fi
+
+    # 降低 swappiness（减少不必要的 swap 使用）
+    sysctl -w vm.swappiness=10 > /dev/null
+    if ! grep -q "vm.swappiness" /etc/sysctl.conf; then
+        echo "vm.swappiness=10" >> /etc/sysctl.conf
+    fi
+
+    log_success "Swap 配置完成: $(free -h | grep Swap)"
 }
 
 # ── 创建 Docker 网络 ─────────────────────────────────────────────────────────
@@ -132,7 +149,7 @@ create_docker_network() {
     fi
 }
 
-# ── 部署 Nginx Proxy Manager ─────────────────────────────────────────────────
+# ── 部署 Nginx Proxy Manager（轻量化版，内存限制 150M）───────────────────────
 deploy_nginx_proxy_manager() {
     log_step "部署 Nginx Proxy Manager（可视化反向代理）..."
 
@@ -143,17 +160,15 @@ deploy_nginx_proxy_manager() {
     create_docker_network "npm_network"
 
     cat > "${NPM_DIR}/docker-compose.yml" << 'EOF'
-version: '3.8'
-
 services:
   npm:
     image: jc21/nginx-proxy-manager:2.11.3
     container_name: nginx-proxy-manager
     restart: unless-stopped
     ports:
-      - "80:80"       # HTTP
-      - "443:443"     # HTTPS
-      - "81:81"       # NPM 管理界面（建议后续改为 IP 白名单）
+      - "80:80"
+      - "443:443"
+      - "81:81"
     volumes:
       - ./data:/data
       - ./letsencrypt:/etc/letsencrypt
@@ -161,20 +176,9 @@ services:
       - npm_network
     environment:
       - DISABLE_IPV6=true
-    # SEC-08: 资源限制，防止单容器耗尽服务器资源
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: '1.0'
-        reservations:
-          memory: 128M
-    # SEC-04: 健康检查
-    healthcheck:
-      test: ["CMD", "/bin/check-health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+    mem_limit: 150m
+    memswap_limit: 150m
+    cpus: '0.5'
 
 networks:
   npm_network:
@@ -183,6 +187,18 @@ EOF
 
     cd "$NPM_DIR"
     docker compose up -d
+
+    # 等待 NPM 启动（最多 60 秒）
+    local i=0
+    while [ $i -lt 12 ]; do
+        if docker ps | grep -q "nginx-proxy-manager" && \
+           docker inspect nginx-proxy-manager --format='{{.State.Health.Status}}' 2>/dev/null | grep -qE "healthy|starting" || \
+           docker ps | grep "nginx-proxy-manager" | grep -q "Up"; then
+            break
+        fi
+        sleep 5
+        i=$((i+1))
+    done
 
     log_success "Nginx Proxy Manager 部署完成（版本已锁定 2.11.3）"
     echo ""
@@ -193,7 +209,7 @@ EOF
     echo ""
 }
 
-# ── SEC-01 修复: 使用 Docker Socket Proxy 保护 Portainer ─────────────────────
+# ── 按需部署 Portainer（不在初始化时安装，需要时手动执行）────────────────────
 deploy_portainer() {
     log_step "部署 Portainer（通过 Docker Socket Proxy 安全访问）..."
 
@@ -201,10 +217,7 @@ deploy_portainer() {
     mkdir -p "${PORTAINER_DIR}/data"
 
     cat > "${PORTAINER_DIR}/docker-compose.yml" << 'EOF'
-version: '3.8'
-
 services:
-  # ── Docker Socket Proxy（安全代理，限制 Docker API 访问权限）────────────────
   socket-proxy:
     image: tecnativa/docker-socket-proxy:latest
     container_name: docker-socket-proxy
@@ -214,12 +227,10 @@ services:
     environment:
       CONTAINERS: 1
       SERVICES: 1
-      TASKS: 1
       NETWORKS: 1
       VOLUMES: 1
       INFO: 1
       IMAGES: 1
-      NODES: 1
       EVENTS: 1
       PING: 1
       VERSION: 1
@@ -227,18 +238,10 @@ services:
       EXEC: 0
       BUILD: 0
       COMMIT: 0
-      CONFIGS: 0
-      DISTRIBUTION: 0
-      PLUGINS: 0
       SECRETS: 0
-      SWARM: 0
     networks:
       - socket_proxy_network
-    deploy:
-      resources:
-        limits:
-          memory: 64M
-          cpus: '0.25'
+    mem_limit: 32m
 
   portainer:
     image: portainer/portainer-ce:2.21.5
@@ -246,7 +249,6 @@ services:
     restart: unless-stopped
     ports:
       - "9000:9000"
-      - "9443:9443"
     volumes:
       - ./data:/data
     environment:
@@ -256,11 +258,7 @@ services:
       - socket_proxy_network
     depends_on:
       - socket-proxy
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-          cpus: '0.5'
+    mem_limit: 128m
 
 networks:
   npm_network:
@@ -273,21 +271,20 @@ EOF
     cd "$PORTAINER_DIR"
     docker compose up -d
 
-    log_success "Portainer 部署完成（通过 Docker Socket Proxy 安全访问）"
+    log_success "Portainer 部署完成"
     echo ""
     echo -e "${GREEN}  Portainer 管理界面: http://$(get_public_ip):9000${NC}"
     echo -e "${YELLOW}  首次访问请在 5 分钟内设置管理员密码${NC}"
     echo ""
 }
 
-# ── SEC-05 修复: 部署 MySQL（修复 root host 配置）────────────────────────────
+# ── 按需部署 MySQL（不在初始化时安装，仅在网站需要数据库时执行）──────────────
 deploy_mysql() {
-    log_step "部署 MySQL 8.0 数据库（安全加固版）..."
+    log_step "部署 MySQL 8.0 数据库..."
 
     local MYSQL_DIR="/opt/manus/mysql"
     mkdir -p "${MYSQL_DIR}/data" "${MYSQL_DIR}/conf" "${MYSQL_DIR}/init"
 
-    # 生成 root 密码
     local MYSQL_ROOT_PASS
     if [ -f "/opt/manus/.mysql_root_pass" ]; then
         MYSQL_ROOT_PASS=$(cat /opt/manus/.mysql_root_pass)
@@ -298,42 +295,38 @@ deploy_mysql() {
         chmod 600 /opt/manus/.mysql_root_pass
     fi
 
-    # 创建 MySQL 专用网络
     create_docker_network "mysql_network"
 
+    # 轻量化 MySQL 配置（针对 1GB 内存优化）
     cat > "${MYSQL_DIR}/conf/my.cnf" << 'EOF'
 [mysqld]
 character-set-server = utf8mb4
 collation-server = utf8mb4_unicode_ci
-max_connections = 200
-wait_timeout = 600
-interactive_timeout = 600
-innodb_buffer_pool_size = 256M
-innodb_log_file_size = 64M
+# 轻量化配置：针对 1GB 内存服务器
+innodb_buffer_pool_size = 128M
+innodb_log_file_size = 32M
 innodb_flush_log_at_trx_commit = 2
-max_allowed_packet = 64M
-slow_query_log = 1
-slow_query_log_file = /var/log/mysql/slow.log
-long_query_time = 2
+max_connections = 50
+table_open_cache = 200
+max_allowed_packet = 32M
+slow_query_log = 0
 local_infile = 0
 symbolic-links = 0
+performance_schema = OFF
 
 [client]
 default-character-set = utf8mb4
 EOF
 
-    cat > "${MYSQL_DIR}/init/01-security-hardening.sql" << 'EOF'
+    cat > "${MYSQL_DIR}/init/01-security.sql" << 'EOF'
 DELETE FROM mysql.user WHERE User='';
 DROP DATABASE IF EXISTS test;
 DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
 DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
 FLUSH PRIVILEGES;
 EOF
-    chmod 644 "${MYSQL_DIR}/init/01-security-hardening.sql"
 
     cat > "${MYSQL_DIR}/docker-compose.yml" << EOF
-version: '3.8'
-
 services:
   mysql:
     image: mysql:8.0
@@ -349,26 +342,15 @@ services:
       - ./data:/var/lib/mysql
       - ./conf/my.cnf:/etc/mysql/conf.d/custom.cnf:ro
       - ./init:/docker-entrypoint-initdb.d:ro
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-          cpus: '1.0'
-        reservations:
-          memory: 256M
+    mem_limit: 384m
+    memswap_limit: 512m
+    cpus: '0.5'
     networks:
       - mysql_network
     command: >
       --default-authentication-plugin=mysql_native_password
-      --character-set-server=utf8mb4
-      --collation-server=utf8mb4_unicode_ci
-      --local-infile=0
-      --symbolic-links=0
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASS}"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
+      --skip-name-resolve
+      --performance-schema=OFF
 
 networks:
   mysql_network:
@@ -378,82 +360,25 @@ EOF
     cd "$MYSQL_DIR"
     docker compose up -d
 
-    wait_for_service "127.0.0.1" "3306" 60
-
-    log_success "MySQL 8.0 部署完成（安全加固：root 仅本机，独立网络）"
+    # 等待 MySQL 就绪（最多 120 秒，首次初始化较慢）
+    log_info "等待 MySQL 初始化完成（首次启动约需 60-90 秒）..."
+    local i=0
+    while [ $i -lt 24 ]; do
+        if docker exec manus-mysql mysqladmin ping -h 127.0.0.1 -u root -p"${MYSQL_ROOT_PASS}" --silent 2>/dev/null; then
+            break
+        fi
+        sleep 5
+        i=$((i+1))
+        printf "."
+    done
     echo ""
-    echo -e "${GREEN}  MySQL 地址: 127.0.0.1:3306（仅本机访问）${NC}"
-    echo -e "${GREEN}  MySQL root 密码已保存至: /opt/manus/.mysql_root_pass${NC}"
-    echo ""
-}
 
-# ── 为站点创建独立 MySQL 数据库和用户 ────────────────────────────────────────
-create_site_database() {
-    local domain="$1"
-    local db_name
-    db_name=$(echo "$domain" | tr '.' '_' | tr '-' '_' | tr '[:upper:]' '[:lower:]')
-    db_name="site_${db_name}"
-
-    local db_user="${db_name}_user"
-    local db_pass
-    db_pass=$(gen_password 24)
-
-    local root_pass
-    root_pass=$(cat /opt/manus/.mysql_root_pass 2>/dev/null)
-
-    if [ -z "$root_pass" ]; then
-        log_warn "未找到 MySQL root 密码，跳过数据库创建"
-        return 1
+    if [ $i -ge 24 ]; then
+        log_warn "MySQL 初始化超时，可能仍在后台运行。稍后执行 'docker ps' 确认状态。"
+    else
+        log_success "MySQL 8.0 部署完成"
+        echo -e "${GREEN}  MySQL root 密码: ${MYSQL_ROOT_PASS}${NC}"
+        echo -e "${YELLOW}  密码已保存至: /opt/manus/.mysql_root_pass${NC}"
     fi
-
-    log_step "为站点 ${domain} 创建独立数据库..."
-
-    docker exec manus-mysql mysql -u root -p"${root_pass}" -e "
-        CREATE DATABASE IF NOT EXISTS \`${db_name}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-        CREATE USER IF NOT EXISTS '${db_user}'@'%' IDENTIFIED BY '${db_pass}';
-        GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, INDEX, ALTER, CREATE TEMPORARY TABLES ON \`${db_name}\`.* TO '${db_user}'@'%';
-        FLUSH PRIVILEGES;
-    " 2>/dev/null
-
-    local site_dir="/opt/sites/${domain}"
-    mkdir -p "$site_dir"
-    cat > "${site_dir}/.db_info" << EOF
-DB_HOST=manus-mysql
-DB_PORT=3306
-DB_NAME=${db_name}
-DB_USER=${db_user}
-DB_PASS=${db_pass}
-EOF
-    chmod 600 "${site_dir}/.db_info"
-
-    log_success "数据库 ${db_name} 创建完成，信息已保存至 ${site_dir}/.db_info"
-    echo "$db_pass"
-}
-
-# ── 删除站点数据库 ───────────────────────────────────────────────────────────
-drop_site_database() {
-    local domain="$1"
-    local db_name
-    db_name=$(echo "$domain" | tr '.' '_' | tr '-' '_' | tr '[:upper:]' '[:lower:]')
-    db_name="site_${db_name}"
-    local db_user="${db_name}_user"
-
-    local root_pass
-    root_pass=$(cat /opt/manus/.mysql_root_pass 2>/dev/null)
-    [ -z "$root_pass" ] && return
-
-    docker exec manus-mysql mysql -u root -p"${root_pass}" -e "
-        DROP DATABASE IF EXISTS \`${db_name}\`;
-        DROP USER IF EXISTS '${db_user}'@'%';
-        FLUSH PRIVILEGES;
-    " 2>/dev/null
-
-    log_info "已删除站点 ${domain} 的数据库"
-}
-
-# ── 将站点容器接入 MySQL 网络 ─────────────────────────────────────────────────
-connect_site_to_mysql() {
-    local container_name="$1"
-    docker network connect mysql_network "$container_name" 2>/dev/null || true
-    log_info "站点容器 ${container_name} 已接入 MySQL 网络"
+    echo ""
 }

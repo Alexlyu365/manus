@@ -1,9 +1,7 @@
-version: '3.8'
-
 # =============================================================================
-# Node.js 网站模板（安全加固版）
+# Node.js 网站模板（轻量化版 v2）
 # 适用: Next.js / Express / Nuxt 等 Node.js 应用
-# 安全修订: SEC-08 资源限制、no-new-privileges、mysql_network 隔离
+# 内存占用: ~80-128MB
 # =============================================================================
 
 services:
@@ -14,21 +12,18 @@ services:
     image: site_${SITE_NAME}:latest
     container_name: site_${SITE_NAME}
     restart: unless-stopped
-    # 安全说明: 使用 expose 而非 ports，通过 NPM 内部网络反代
     expose:
       - "${APP_PORT:-3000}"
     volumes:
-      - ./uploads:/app/uploads     # 用户上传文件（图片/视频）
+      - ./uploads:/app/uploads
       - ./logs:/app/logs
     networks:
       - npm_network
       - site_internal
-      # 如果需要数据库，由部署脚本动态添加 mysql_network
     environment:
       - NODE_ENV=production
       - PORT=${APP_PORT:-3000}
       - TZ=Asia/Shanghai
-      # 数据库连接（由部署脚本自动填充）
       - DB_HOST=${DB_HOST:-manus-mysql}
       - DB_PORT=${DB_PORT:-3306}
       - DB_NAME=${DB_NAME:-}
@@ -36,26 +31,14 @@ services:
       - DB_PASS=${DB_PASS:-}
     env_file:
       - .env
-    # SEC-08: 资源限制
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: '1.0'
-        reservations:
-          memory: 64M
-    # 安全选项
+    mem_limit: 128m
+    memswap_limit: 256m
+    cpus: '0.5'
     security_opt:
       - no-new-privileges:true
     labels:
       - "manus.site=${DOMAIN}"
       - "manus.type=nodejs"
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:${APP_PORT:-3000}/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
 
 networks:
   npm_network:

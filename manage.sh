@@ -684,6 +684,29 @@ cmd_deploy_from_git() {
     register_site "$DOMAIN" "$SITE_TYPE" "auto"
     log_success "从 Git 仓库部署完成: $DOMAIN"
 }
+
+# ── 按需安装 MySQL ───────────────────────────────────────────────────────────
+cmd_install_mysql() {
+    check_root
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q 'manus-mysql'; then
+        log_info "MySQL 已安装，当前状态:"
+        docker ps --filter name=manus-mysql --format "  {{.Names}}\t{{.Status}}"
+        return 0
+    fi
+    log_info "正在安装 MySQL 8.0（首次初始化约需 60-90 秒）..."
+    deploy_mysql
+}
+
+# ── 按需安装 Portainer ───────────────────────────────────────────────────────
+cmd_install_portainer() {
+    check_root
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q 'portainer'; then
+        log_info "Portainer 已安装，当前状态:"
+        docker ps --filter name=portainer --format "  {{.Names}}\t{{.Status}}"
+        return 0
+    fi
+    log_info "正在安装 Portainer..."
+    deploy_portainer
 }
 
 # =============================================================================
@@ -734,6 +757,8 @@ show_main_menu() {
         echo -e "  ${BLUE}32${NC} GitHub 私有仓库配置"
         echo -e "  ${BLUE}33${NC} 限制管理面板访问 IP"
         echo -e "  ${BLUE}34${NC} 更新 manus 脚本自身"
+        echo -e "  ${BLUE}35${NC} 安装 MySQL（按需）"
+        echo -e "  ${BLUE}36${NC} 安装 Portainer（按需）"
         echo -e "  ${RED}0${NC}  退出"
         echo ""
         echo -e "${YELLOW}请输入选项:${NC} \c"
@@ -760,6 +785,8 @@ show_main_menu() {
             32) manage_github_token; read -rp "按回车键继续..." ;;
             33) restrict_admin_ports "${2:-}"; read -rp "按回车键继续..." ;;
             34) self_update; read -rp "按回车键继续..." ;;
+            35) cmd_install_mysql; read -rp "按回车键继续..." ;;
+            36) cmd_install_portainer; read -rp "按回车键继续..." ;;
             0)  echo "再见！"; exit 0 ;;
             *)  log_warn "无效选项，请重新输入" ;;
         esac
@@ -862,6 +889,8 @@ case "${1:-}" in
     migrate)         migrate_site ;;
     monitor)         monitor_sites ;;
     batch)           batch_sites_operation ;;
+    install-mysql)   cmd_install_mysql ;;
+    install-portainer) cmd_install_portainer ;;
     help|--help|-h)  show_help ;;
     "")              show_main_menu ;;
     *)
